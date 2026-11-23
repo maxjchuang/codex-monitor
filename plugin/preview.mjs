@@ -241,6 +241,16 @@ const drawer = variant === 'mobile' || variant === 'drawer' || variant === 'draw
 // Chrome headless 的 viewport 最小就是 500px，窗口设更小只会裁掉右边，
 // 截出来的图看着像溢出，其实页面本身没问题。
 const size = variant.startsWith('mobile') || variant.startsWith('drawer') ? '500,900' : '1200,760'
+// 用真实截图当样例，免得预览里是个占位方块。
+// 预览用的样例图放在 docs/ 里，别引用本机临时目录（别人跑不起来）。
+const SHOT = (() => {
+  try {
+    return `data:image/png;base64,${readFileSync('docs/sample-shot.png').toString('base64')}`
+  } catch {
+    return 'data:image/gif;base64,R0lGODlhAQABAAAAACw='
+  }
+})()
+
 const htmlPath = `/tmp/cxm-preview-${variant}.html`
 
 const html = `<!doctype html><meta charset="utf-8"><style>
@@ -282,7 +292,8 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
       <div class="cxm-more"><button class="cxm-more-btn">加载更早的消息</button></div>
       <div class="cxm-flow">
         <div class="cxm-msg" data-role="user">
-          <div class="cxm-bubble">帮我看看截图里箭头指向的「添加本地文件」在暗色下的默认态和悬停态。</div>
+          <div class="cxm-shots"><img class="cxm-shot" src="${SHOT}" alt="用户附的图 1"></div>
+          <div class="cxm-bubble">附件的这两个图标不符合预期，是什么原因？</div>
           <div class="cxm-stamp">18:50</div>
         </div>
         <div class="cxm-work" data-open="false">

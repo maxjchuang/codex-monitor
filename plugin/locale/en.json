@@ -64,6 +64,7 @@
   "reply.busy": "Codex is holding this session open. Switch to another session in Codex, or close it, then send again.",
   "reply.locked": "Codex has this session open, so it cannot take a message right now. Switch away from it or close it in Codex and this will clear on its own.",
   "reply.lockedPlaceholder": "Session is held by Codex; sending is unavailable",
+  "chat.imageAlt": "Attached image {n}",
   "reply.note": "Appends a new turn; does not interrupt work already running. ⌘↵ sends.",
   "reply.options": "Options Codex offered (click to fill in, you still send):"
 }

@@ -149,6 +149,9 @@ const statusPayload = {
     transcriptBefore: 1795430000000,
     transcript: [
       { role: 'user', at: 1795431000, text: '帮我修一下 GridView 的空行。' },
+      // 贴图的用户消息：图片要在气泡外面单独一行，文字照旧。
+      { role: 'user', at: 1795431005, text: '这两个图标不对。',
+        images: ['data:image/png;base64,iVBORw0KGgo='] },
       // 一轮的中间过程收在 work 块里，默认收起；最终答复单独露出。
       { role: 'work', at: 1795431025, durationMs: 389000, count: 3, entries: [
         { role: 'agent', at: 1795431010, text: '我先看一下 `GridView` 的**组件实现**。' },
@@ -276,6 +279,9 @@ let drawerAttr = null
 let dockParent = null
 let cardFound = false
 let textareaDisabled = null
+let shotCount = 0
+let shotInsideBubble = 0
+let parentClass = null
 const allButtons = []   // 跨渲染累积，方便找只出现在某次渲染里的按钮
 function walk(node, at) {
   if (node === null || node === undefined || node === false) return
@@ -292,6 +298,10 @@ function walk(node, at) {
     return
   }
   // 记下 textarea 的 disabled，用来断言「锁定后不能输入」。
+  if (node.type === 'img' && node.props?.className === 'cxm-shot') {
+    shotCount += 1
+    if (parentClass === 'cxm-bubble') shotInsideBubble += 1
+  }
   if (node.type === 'textarea') {
     textareaDisabled = node.props?.disabled === true
   }
@@ -310,6 +320,8 @@ function walk(node, at) {
     return
   }
   const cls = node.props?.className
+  const outerClass = parentClass
+  parentClass = typeof cls === 'string' ? cls : null
   if (typeof cls === 'string' && cls) classes.push(cls)
   if (typeof cls === 'string' && cls.includes('cxm-list-pane')) {
     listOpenAttr = node.props['data-open']
@@ -328,6 +340,7 @@ function walk(node, at) {
   const ph = node.props?.placeholder ?? node.props?.['aria-label']
   if (typeof ph === 'string' && ph.trim()) texts.push(ph.trim())
   walk(node.children, `${at}/${String(node.type)}`)
+  parentClass = outerClass
 }
 
 function renderOnce() {
@@ -372,6 +385,8 @@ const desktopDrawerAttr = drawerAttr
 const checks = [
   ['styles injected into document.head (badge survives unmount)',
     headChildren.some((el) => el['data-plugin-css'] === 'codex-monitor' && el.textContent.includes('.cxm-page'))],
+  ['attached image renders as an img', shotCount >= 1],
+  ['attached image sits outside the bubble', shotInsideBubble === 0],
   ['left pane title translated', joined.includes('会话')],
   ['counts interpolated', joined.includes('3 个会话 · 1 正在跑 · 1 等你回复')],
   ['both sessions listed', joined.includes('修 GridView') && joined.includes('讨论设计')],

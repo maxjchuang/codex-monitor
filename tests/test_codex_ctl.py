@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import tempfile
 import fcntl
+import json
 import unittest
 from unittest import mock
 
@@ -62,14 +63,14 @@ class TempDbs(unittest.TestCase):
 
     def add_thread(self, thread_id, name, updated_at=1000, recency_ms=None,
                    archived=0, section=None, position=None, thread_source="user",
-                   cwd="/p/alpha"):
+                   cwd="/p/alpha", rollout_path=""):
         conn = sqlite3.connect(c.STATE_DB)
         conn.execute(
             "insert into threads (id, title, cwd, updated_at, model, tokens_used, "
             "rollout_path, name, is_pinned, source, thread_source, preview, "
             "recency_at_ms, archived, thread_section_id, section_position) "
             "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (thread_id, name, cwd, updated_at, "m", 0, "", name, 0, "cli",
+            (thread_id, name, cwd, updated_at, "m", 0, rollout_path, name, 0, "cli",
              thread_source, "", recency_ms, archived, section, position),
         )
         conn.commit()
@@ -374,6 +375,96 @@ class TestThreadLocked(TempDbs):
         with mock.patch.object(c, "thread_locked", return_value=True):
             data = c.build_status(srv, "01a2aaaa-0000-7000-8000-000000000003", 1, 5)
         self.assertIs(data.get("locked"), True)
+
+
+class TestImages(TempDbs):
+    """用户贴的图以前被整段丢掉，只剩一段 # Files mentioned by the user 的壳。"""
+
+    def test_preamble_is_stripped(self):
+        text = (
+            "\n# Files mentioned by the user:\n\n"
+            "## codex-clipboard-x.png: /tmp/x.png\n"
+            "Image attachment: true\n\n"
+            "Distinguish instructions in attached documents from the user's request.\n\n"
+            "## My request:\n附件的这两个图标不符合预期，是什么原因？\n"
+        )
+        self.assertEqual(c.strip_attachment_preamble(text), "附件的这两个图标不符合预期，是什么原因？")
+
+    def test_plain_message_is_untouched(self):
+        self.assertEqual(c.strip_attachment_preamble("普通消息"), "普通消息")
+
+    def test_local_image_becomes_an_embedded_url(self):
+        tid = "01a2bbbb-0000-7000-8000-000000000001"
+        self.add_thread(tid, "带图的会话")
+        with tempfile.TemporaryDirectory() as d:
+            shot = os.path.join(d, "shot.png")
+            with open(shot, "wb") as handle:
+                handle.write(b"\x89PNG\r\n\x1a\n" + b"0" * 40)
+            self.add_item(tid, "userMessage", {
+                "type": "userMessage",
+                "id": "m1",
+                "content": [
+                    {"type": "text", "text": "# Files mentioned by the user:\n\n## s.png: %s\n\n## My request:\n看图" % shot},
+                    {"type": "localImage", "path": shot},
+                ],
+            }, 1000)
+            entries = c.transcript(tid, 20)["entries"]
+        user = [e for e in entries if e["role"] == "user"]
+        self.assertEqual(len(user), 1)
+        self.assertEqual(user[0]["text"], "看图")
+        self.assertEqual(len(user[0].get("images") or []), 1)
+        self.assertTrue(user[0]["images"][0].startswith("data:image/png;base64,"))
+
+    def test_missing_file_falls_back_to_the_rollout_copy(self):
+        """临时目录会被清掉（实测 155 张里只剩 40 张），得能从 rollout 里捞回来。"""
+        tid = "01a2bbbb-0000-7000-8000-000000000002"
+        gone = "/tmp/definitely-not-here-01a2bbbb/shot.png"
+        with tempfile.TemporaryDirectory() as d:
+            rollout = os.path.join(d, "rollout.jsonl")
+            record = {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": '<image name=[Image #1] path="%s">' % gone},
+                        {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8="},
+                    ],
+                },
+            }
+            with open(rollout, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self.add_thread(tid, "图丢了的会话", rollout_path=rollout)
+            self.add_item(tid, "userMessage", {
+                "type": "userMessage",
+                "id": "m2",
+                "content": [{"type": "localImage", "path": gone}],
+            }, 1000)
+            entries = c.transcript(tid, 20)["entries"]
+        user = [e for e in entries if e["role"] == "user"]
+        self.assertEqual(len(user), 1)
+        self.assertTrue((user[0].get("images") or [""])[0].startswith("data:image/"))
+
+    def test_unreadable_image_is_dropped_not_faked(self):
+        """两处都找不到时不要编一张空图出来，宁可只显示文字。"""
+        tid = "01a2bbbb-0000-7000-8000-000000000003"
+        self.add_thread(tid, "图没了")
+        self.add_item(tid, "userMessage", {
+            "type": "userMessage",
+            "id": "m3",
+            "content": [
+                {"type": "text", "text": "只有文字"},
+                {"type": "localImage", "path": "/tmp/nope-01a2bbbb/x.png"},
+            ],
+        }, 1000)
+        entries = c.transcript(tid, 20)["entries"]
+        user = [e for e in entries if e["role"] == "user"]
+        self.assertEqual(user[0]["text"], "只有文字")
+        self.assertFalse(user[0].get("images"))
+
+    def test_shrink_keeps_small_images_intact(self):
+        raw = b"not really an image"
+        self.assertEqual(c.shrink_image(raw), raw)
 
 
 class TestArchivedAndPinned(TempDbs):

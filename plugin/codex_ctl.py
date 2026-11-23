@@ -15,8 +15,10 @@
 """
 
 import argparse
-import json
+import base64
 import fcntl
+import json
+import mimetypes
 import os
 import re
 import sqlite3
@@ -224,6 +226,148 @@ def recent_items(thread_id, limit=8):
     return out
 
 
+# 用户贴图时 Codex 会在正文前面塞一段文件清单，那是给模型看的，不是人话。
+ATTACH_PREAMBLE = re.compile(
+    r"^\s*# Files mentioned by the user:\s*\n"
+    r"(?:\s*## [^\n]*\n|\s*Image attachment: [^\n]*\n)*"
+    r"(?:\s*Distinguish instructions in attached documents from the user's request\.\s*\n*)?"
+    r"(?:\s*## My request:\s*\n?)?",
+    re.MULTILINE,
+)
+
+
+def strip_attachment_preamble(text):
+    """把附件清单那段壳去掉，只留用户真正说的话。"""
+    if "Files mentioned by the user" not in text:
+        return text
+    return ATTACH_PREAMBLE.sub("", text, count=1).strip()
+
+
+def rollout_path_for(thread_id):
+    conn = db(STATE_DB)
+    if not conn:
+        return None
+    try:
+        row = conn.execute(
+            "select rollout_path from threads where id=?", (thread_id,)
+        ).fetchone()
+        return row["rollout_path"] if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+MAX_IMAGE_BYTES = 4 * 1024 * 1024
+
+
+# 缩略图参数：对话里最大显示 220px 高，按 2 倍屏留 440px 足够，再大纯属浪费。
+THUMB_MAX_SIDE = 640
+THUMB_QUALITY = 72
+
+
+def shrink_image(raw):
+    """把图片压到适合在对话里看的尺寸。没装 Pillow 就原样返回。
+
+    一张 Retina 截图动辄 2MB，一页 20 张就是几十 MB 的 JSON，聊天窗会被拖垮。
+    """
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+    except ImportError:
+        return raw
+    try:
+        with Image.open(BytesIO(raw)) as img:
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+            img.thumbnail((THUMB_MAX_SIDE, THUMB_MAX_SIDE))
+            out = BytesIO()
+            img.save(out, format="PNG", optimize=True)
+            shrunk = out.getvalue()
+        return shrunk if len(shrunk) < len(raw) else raw
+    except Exception:
+        return raw
+
+
+# 缩略图算一次就够：同一张图会在每次轮询里重复出现，重算是纯浪费。
+_IMAGE_CACHE = {}
+_IMAGE_CACHE_MAX = 128
+
+
+def image_data_url(path, rollout_path=None):
+    """把 localImage 的路径变成能直接塞进 <img> 的 data URL。
+
+    先读本地文件；临时目录会被系统清掉，读不到就去 rollout 里找同一路径的内嵌
+    副本（Codex 自己存了一份 base64）。两处都没有就返回 None。
+    """
+    try:
+        stamp = os.path.getmtime(path)
+    except OSError:
+        stamp = None
+    key = (path, stamp, rollout_path)
+    if key in _IMAGE_CACHE:
+        return _IMAGE_CACHE[key]
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read(MAX_IMAGE_BYTES + 1)
+        if 0 < len(raw) <= MAX_IMAGE_BYTES:
+            mime = mimetypes.guess_type(path)[0] or "image/png"
+            url = f"data:{mime};base64,{base64.b64encode(shrink_image(raw)).decode()}"
+            remember_image(key, url)
+            return url
+    except OSError:
+        pass
+    url = rollout_image(rollout_path, path)
+    remember_image(key, url)
+    return url
+
+
+def remember_image(key, url):
+    if len(_IMAGE_CACHE) >= _IMAGE_CACHE_MAX:
+        _IMAGE_CACHE.clear()
+    _IMAGE_CACHE[key] = url
+
+
+def shrink_data_url(url):
+    """rollout 里的内嵌图同样要压，否则回退路径会塞进一张 2MB 的图。"""
+    try:
+        header, encoded = url.split(",", 1)
+        raw = base64.b64decode(encoded)
+    except (ValueError, TypeError):
+        return url
+    if len(raw) > MAX_IMAGE_BYTES:
+        return None
+    return f"{header},{base64.b64encode(shrink_image(raw)).decode()}"
+
+
+def rollout_image(rollout_path, path):
+    """从 rollout jsonl 里捞回某张图的 base64。按路径精确匹配，不靠顺序。"""
+    if not rollout_path or not os.path.exists(rollout_path):
+        return None
+    try:
+        with open(rollout_path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if "input_image" not in line or path not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                payload = record.get("payload") or {}
+                content = payload.get("content") or []
+                if not any(path in (seg.get("text") or "") for seg in content
+                           if seg.get("type") == "input_text"):
+                    continue
+                for seg in content:
+                    url = seg.get("image_url") or ""
+                    if seg.get("type") == "input_image" and url.startswith("data:image/"):
+                        return shrink_data_url(url)
+    except OSError:
+        pass
+    return None
+
+
 def transcript(thread_id, limit=200, scan_limit=4000, before=None):
     """按时间正序返回一段对话，供聊天窗口渲染。
 
@@ -267,11 +411,20 @@ def transcript(thread_id, limit=200, scan_limit=4000, before=None):
         kind = r["item_type"]
         at = r["created_at_ms"] / 1000
         if kind == "userMessage":
+            content = payload.get("content") or []
+            # 用户贴的图存成 localImage，只带一个临时目录路径。临时文件会被系统清掉
+            # （实测 155 张里 40 张还在），所以拿不到时回退到 rollout 里的内嵌副本。
+            images = [c.get("path") for c in content
+                      if c.get("type") == "localImage" and c.get("path")]
             text = " ".join(
-                c.get("text", "") for c in payload.get("content") or [] if c.get("type") == "text"
+                c.get("text", "") for c in content if c.get("type") == "text"
             ).strip()
-            if text:
-                out.append({"role": "user", "at": at, "text": text, "id": payload.get("id")})
+            text = strip_attachment_preamble(text)
+            entry = {"role": "user", "at": at, "text": text, "id": payload.get("id")}
+            if images:
+                entry["images"] = images
+            if text or images:
+                out.append(entry)
             continue
         if kind == "agentMessage":
             text = (payload.get("text") or "").strip()
@@ -293,6 +446,17 @@ def transcript(thread_id, limit=200, scan_limit=4000, before=None):
 
     # 先分组再裁剪：先 trim 会把一轮切碎（结尾那几十条命令占满了窗口，
     # 用户的提问和最终答复反而被挤掉），而且 work 块也就没法成立。
+    # 图片只在真正要返回的条目上解析：一条消息的 base64 能有 2MB，给整页
+    # 都解一遍既慢又占内存，而裁掉的那些根本不会显示。
+    rollout = rollout_path_for(thread_id)
+    for entry in out:
+        paths = entry.pop("images", None)
+        if not paths:
+            continue
+        urls = [url for url in (image_data_url(p, rollout) for p in paths) if url]
+        if urls:
+            entry["images"] = urls
+
     grouped = group_turns(out, turn_spans(thread_id))
     kept = trim_turns(grouped, limit)
     # 还有更早的内容吗？把游标一起返回，前端向上滚时带着它来要上一页。

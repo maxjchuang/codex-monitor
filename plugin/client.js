@@ -82,6 +82,7 @@ window.__ModuleLoader__.load({
       'reply.busy': '这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。',
       'reply.locked': 'Codex 正开着这个会话，暂时不能投递。在 Codex 里切到别的会话或关掉它，这里会自动恢复。',
       'reply.lockedPlaceholder': '会话被 Codex 占用，暂时无法发送',
+      'chat.imageAlt': '用户附的图 {n}',
       'reply.note': '追加为新的一轮，不打断正在跑的任务。⌘↵ 发送。',
       'reply.options': 'Codex 给出的选项（点击填入，需你自己发送）：',
     }
@@ -146,6 +147,7 @@ window.__ModuleLoader__.load({
       'reply.busy': 'Codex is holding this session open. Switch to another session in Codex, or close it, then send again.',
       'reply.locked': 'Codex has this session open, so it cannot take a message right now. Switch away from it or close it in Codex and this will clear on its own.',
       'reply.lockedPlaceholder': 'Session is held by Codex; sending is unavailable',
+      'chat.imageAlt': 'Attached image {n}',
       'reply.note': 'Appends a new turn; does not interrupt work already running. ⌘↵ sends.',
       'reply.options': 'Options Codex offered (click to fill in, you still send):',
     }
@@ -497,6 +499,25 @@ window.__ModuleLoader__.load({
 .cxm-composer[data-locked='true'] .cxm-textarea{opacity:.6;cursor:not-allowed}
 .cxm-composer[data-locked='true'] .cxm-send{opacity:.4;cursor:default}
 .cxm-opt:disabled{opacity:.5;cursor:not-allowed}
+/* 用户附的图：和 DSH 的附件缩略图同尺寸（64×64，radius-xl），点开看大图。
+   一张 2MB 的截图直接铺满气泡会把整段对话压垮，缩略图更接近桌面端的做法。 */
+/* 对话里的图要看得清内容，所以给一个高度上限、宽度自适应，而不是裁成方块：
+   object-fit:cover 会把截图上下切掉，用户贴图正是为了看全貌。 */
+.cxm-shot{max-width:100%;max-height:220px;width:auto;height:auto;display:block;
+  border-radius:var(--dsw-radius-lg);cursor:zoom-in;
+  border:.5px solid var(--dsw-alias-border-l2-darkmode-thin);
+  background:var(--dsw-alias-interactive-bg-hover)}
+.cxm-shots{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;max-width:100%}
+.cxm-shot:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset:1px}
+/* 全屏看图：铺满视口，点任意处或 Esc 关掉。 */
+.cxm-zoom{position:fixed;inset:0;z-index:2147483000;display:flex;
+  align-items:center;justify-content:center;padding:32px;cursor:zoom-out;
+  background:rgba(0,0,0,.72);backdrop-filter:blur(2px)}
+.cxm-zoom-img{max-width:100%;max-height:100%;object-fit:contain;display:block;
+  border-radius:var(--dsw-radius-md);box-shadow:var(--dsw-elevation-soft)}
+.cxm-zoom:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset:-4px}
 .cxm-card{box-sizing:border-box;display:flex;flex-direction:column;gap:12px;
   width:100%;max-width:var(--dsh-composer-card-max-width,920px);
   border:0;border-radius:var(--dsw-radius-panel,28px);padding:8px 8px 8px;
@@ -1461,6 +1482,8 @@ window.__ModuleLoader__.load({
     }
 
     function Entry({ t, entry }) {
+      // 点缩略图放大看。放在这里而不是全局，是因为一次只会展开一张。
+      const [zoom, setZoom] = useState(null)
       if (entry.role === 'work') return h(WorkBlock, { t, entry })
       if (entry.role === 'action') {
         const run = entry.count ?? 1
@@ -1479,20 +1502,47 @@ window.__ModuleLoader__.load({
         )
       }
       const mine = entry.role === 'user'
-      return h(
+      const body = h(
         'div',
         {
           className: 'cxm-msg',
           'data-role': mine ? 'user' : 'agent',
           'data-final': entry.final ? 'true' : 'false',
         },
-        h(
-          'div',
-          { className: 'cxm-bubble' },
-          // Codex replies in Markdown; the user's own text stays literal, since it is
-          // whatever they typed and reinterpreting it as markup would be surprising.
-          mine ? entry.text : renderMarkdown(entry.text, h, 'agent'),
-        ),
+        // 图放在气泡外面，和 DSH 一样单独成一行：气泡有内边距，塞进去会贴边。
+        (entry.images ?? []).length > 0
+          ? h(
+              'div',
+              { className: 'cxm-shots' },
+              (entry.images ?? []).map((src, index) =>
+            h('img', {
+              key: index,
+              className: 'cxm-shot',
+              src,
+              alt: t('chat.imageAlt', { n: index + 1 }),
+              loading: 'lazy',
+              tabIndex: 0,
+              role: 'button',
+              onClick: () => setZoom(src),
+              onKeyDown: (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setZoom(src)
+                }
+              },
+            }),
+              ),
+            )
+          : null,
+        entry.text || !mine
+          ? h(
+              'div',
+              { className: 'cxm-bubble' },
+              // Codex replies in Markdown; the user's own text stays literal, since it is
+              // whatever they typed and reinterpreting it as markup would be surprising.
+              entry.text ? (mine ? entry.text : renderMarkdown(entry.text, h, 'agent')) : null,
+            )
+          : null,
         entry.questions && entry.questions.length > 0
           ? h(
               'div',
@@ -1505,6 +1555,26 @@ window.__ModuleLoader__.load({
           : null,
         mine ? h('div', { className: 'cxm-stamp' }, clock(entry.at)) : null,
       )
+      if (!zoom) return body
+      return [
+        body,
+        h(
+          'div',
+          {
+            key: 'zoom',
+            className: 'cxm-zoom',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': t('chat.imageAlt', { n: 1 }),
+            tabIndex: 0,
+            onClick: () => setZoom(null),
+            onKeyDown: (event) => {
+              if (event.key === 'Escape') setZoom(null)
+            },
+          },
+          h('img', { className: 'cxm-zoom-img', src: zoom, alt: '' }),
+        ),
+      ]
     }
 
     /** The right pane: header, scrolling transcript, composer. */
