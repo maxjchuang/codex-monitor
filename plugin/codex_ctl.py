@@ -127,6 +127,14 @@ def last_activity_at(thread_id):
         conn.close()
 
 
+def activity_age(thread_id, now_ms=None):
+    """距最近一次动作多少秒；没有活动记录时返回 None（不要伪装成天文数字）。"""
+    last = last_activity_at(thread_id)
+    if not last:
+        return None
+    return max(0.0, ((now_ms or int(time.time() * 1000)) - last) / 1000)
+
+
 def live_state(thread_id, turn, questions, now_ms=None):
     """综合判断会话此刻的状态。
 
@@ -141,7 +149,7 @@ def live_state(thread_id, turn, questions, now_ms=None):
        等子 agent），所以窗口太窄会误判成“已停下”。
     """
     now_ms = now_ms or int(time.time() * 1000)
-    age = (now_ms - last_activity_at(thread_id)) / 1000
+    age = activity_age(thread_id, now_ms)
     if questions:
         return "waiting", age
 
@@ -152,7 +160,7 @@ def live_state(thread_id, turn, questions, now_ms=None):
         return "failed", age
     if status == "inProgress":
         return "running", age
-    if age <= LIVE_WINDOW_SEC:
+    if age is not None and age <= LIVE_WINDOW_SEC:
         return "running", age
     return "stopped", age
 

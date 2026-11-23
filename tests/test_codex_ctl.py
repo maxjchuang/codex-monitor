@@ -120,6 +120,12 @@ class TestLiveState(TempDbs):
         kind, _ = c.live_state("t", {"status": "interrupted"}, None, now_ms=1000 + 120_000)
         self.assertEqual(kind, "running")
 
+    def test_no_activity_yet_is_not_a_huge_age(self):
+        """回归：没有活动记录时 age 必须是 None，不能算成“距 1970 年多少秒”。"""
+        kind, age = c.live_state("no-such-thread", {"status": "interrupted"}, None, now_ms=1795435073 * 1000)
+        self.assertEqual(kind, "stopped")
+        self.assertIsNone(age)
+
     def test_failed_reported(self):
         self.add_turn("t", "failed")
         self.add_item("t", "reasoning", {}, at_ms=1000)
