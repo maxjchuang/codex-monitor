@@ -158,6 +158,8 @@ const dict = {
   'page.updated': '更新于 {time}', 'page.empty': '没读到会话',
   'page.errorTitle': '读取失败', 'page.retry': '重试',
   'list.title': '会话', 'list.empty': '还没有会话',
+  'list.groupWaiting': '{n} 个等你回答', 'list.groupRunning': '{n} 个正在跑',
+  'list.showMore': '展开显示 {n} 个',
   'state.waiting': '等你回答', 'state.running': '正在跑', 'state.done': '已完成',
   'state.failed': '失败', 'state.stopped': '已停下', 'state.idle': '空闲',
   'chat.placeholderPick': '从左边选一个会话', 'chat.placeholderPickHint': '也可以直接派活',

@@ -46,5 +46,10 @@
     "sent": "Delivered. Codex will pick it up shortly.",
     "failed": "Could not deliver: {error}",
     "queuedNote": "Codex appends this as a new turn; it does not interrupt work already running."
+  },
+  "list": {
+    "groupWaiting": "{n} waiting",
+    "groupRunning": "{n} running",
+    "showMore": "Show {n} more"
   }
 }

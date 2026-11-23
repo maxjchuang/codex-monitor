@@ -46,5 +46,10 @@
     "sent": "已投递，Codex 稍后会处理。",
     "failed": "投递失败：{error}",
     "queuedNote": "这会作为新的一轮追加进去，不会打断正在跑的任务。"
+  },
+  "list": {
+    "groupWaiting": "{n} 个等你回答",
+    "groupRunning": "{n} 个正在跑",
+    "showMore": "展开显示 {n} 个"
   }
 }

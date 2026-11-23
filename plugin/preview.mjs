@@ -54,23 +54,64 @@ const light = {
     '11px / 16px ui-monospace, SFMono-Regular, Menlo, monospace',
 }
 
-const sessions = [
-  ['修 GridView 空行', '18:53', 'base-ui', '是否删除空白子记录？', 'warn', true],
-  ['讨论 faster 设计', '18:51', 'faster · 正在跑', null, 'business', false],
-  ['改一下文件内容', '18:40', 'codex-demo', null, 'success', false],
+const groups = [
+  ['bitable-sdk', [
+    ['复现并定位甘特图日期错位', '18:53', 'waiting', '是否按东八区重新解析？'],
+    ['修复底部栏未渲染问题', '18:40', 'running', null],
+    ['定位双向关联字段显示为空', '17:22', 'stopped', null],
+  ]],
+  ['base-ui-component-lib', [
+    ['请接手 GridView 任务', '18:51', 'running', null],
+    ['拉取 develop 并启动 Storybook', '16:03', 'done', null],
+  ]],
+  ['faster', [
+    ['梳理项目工程分层设计', '15:12', 'done', null],
+  ]],
 ]
 
-const rows = sessions
-  .map(([title, time, meta, ask, tone, sel]) => `
-      <button class="cxm-row"${sel ? ' data-selected="true"' : ''}>
-        <span class="cxm-row-top">
-          <span class="cxm-dot" style="background:var(--dsw-alias-state-${tone}-primary)"></span>
-          <span class="cxm-row-name">${title}</span>
-          <span class="cxm-row-time">${time}</span>
-        </span>
-        <span class="cxm-row-meta">${meta}</span>
-        ${ask ? `<span class="cxm-row-ask">${ask}</span>` : ''}
-      </button>`)
+const rows = groups
+  .map(([project, items]) => {
+    const waiting = items.filter((i) => i[2] === 'waiting').length
+    const running = items.filter((i) => i[2] === 'running').length
+    const badge =
+      waiting > 0
+        ? `<span class="cxm-chip" data-tone="warn">${waiting} 个等你回答</span>`
+        : running > 0
+          ? `<span class="cxm-chip" data-tone="business">${running} 个正在跑</span>`
+          : ''
+    const head = `
+        <button class="cxm-group-head" title="${project}">
+          <span class="cxm-group-chevron">⌄</span>
+          <span class="cxm-group-name">${project}</span>
+          ${badge}
+          <span class="cxm-group-count">${items.length}</span>
+        </button>`
+    const CAP = 2
+    const shown = items.slice(0, CAP)
+    const more =
+      items.length > CAP
+        ? `<button class="cxm-group-more">展开显示 ${items.length - CAP} 个</button>`
+        : ''
+    const list = shown
+      .map(([title, time, state, ask]) => {
+        const tone =
+          state === 'waiting' ? 'warn'
+          : state === 'running' ? 'business'
+          : state === 'done' ? 'success'
+          : 'idle'
+        return `
+        <button class="cxm-row">
+          <span class="cxm-row-top">
+            <span class="cxm-dot" style="background:var(--dsw-alias-state-${tone}-primary)"></span>
+            <span class="cxm-row-name">${title}</span>
+            <span class="cxm-row-time">${time}</span>
+          </span>
+          ${ask ? `<span class="cxm-row-ask">${ask}</span>` : ''}
+        </button>`
+      })
+      .join('')
+    return head + list + more
+  })
   .join('')
 
 const html = `<!doctype html><meta charset="utf-8"><style>

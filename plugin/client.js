@@ -212,6 +212,27 @@ window.__ModuleLoader__.load({
 .cxm-row-ask{color:var(--dsw-alias-state-warn-label);font-size:11px;line-height:1.45;
   padding-left:12px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
   overflow:hidden}
+/* project grouping: a quiet heading, the way Codex's own sidebar reads */
+.cxm-group-head{display:flex;align-items:center;gap:6px;width:100%;text-align:left;
+  border:0;background:transparent;color:var(--dsw-alias-label-tertiary);font-family:inherit;
+  font-size:11px;line-height:16px;padding:12px 10px 4px;cursor:pointer;min-width:0}
+.cxm-group-head:hover{color:var(--dsw-alias-label-secondary)}
+.cxm-group-head[data-collapsed='true']{padding-bottom:2px}
+.cxm-group-chevron{flex:none;width:10px;font-size:11px;opacity:.7}
+.cxm-group-name{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-weight:500}
+/* The name outranks the badge: a truncated project name defeats the grouping, so
+   the badge shrinks to its dot when space runs out. */
+.cxm-group-head .cxm-chip{flex:0 1 auto;min-width:0;overflow:hidden}
+.cxm-group-count{margin-left:auto;flex:none;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-caption);font-size:10px}
+.cxm-group-more{display:block;width:100%;text-align:left;border:0;background:none;
+  color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:11px;line-height:16px;
+  padding:5px 10px 5px 26px;cursor:pointer;border-radius:var(--dsw-radius-sm)}
+.cxm-group-more:hover{color:var(--dsw-alias-label-secondary);
+  background:var(--dsw-alias-interactive-bg-hover)}
+.cxm-group-head+.cxm-row{margin-top:1px}
+
 .cxm-chip{font-size:10px;padding:1px 6px;border-radius:999px;white-space:nowrap;flex:none;
   line-height:1.7;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
 .cxm-chip[data-tone='warn']{background:var(--dsw-alias-state-warn-tertiary);
@@ -390,6 +411,67 @@ window.__ModuleLoader__.load({
       const token = STATE_TOKEN[state] ?? 'idle'
       const tone = token === 'warn' ? 'warn' : token === 'business' ? 'business' : 'plain'
       return h('span', { className: 'cxm-chip', 'data-tone': tone }, t(`state.${state}`))
+    }
+
+    /**
+     * Group sessions by project the way Codex's own sidebar does, but never lose the
+     * urgency order: a project holding a session that waits on the user comes first,
+     * then one that is running, and only then the rest. Within a project the most
+     * recent activity still leads, so the row you most likely want stays on top.
+     */
+    const STATE_RANK = { waiting: 0, running: 1, failed: 2, stopped: 3, done: 4 }
+    // Sessions shown per project before folding the remainder behind a button.
+    const GROUP_PREVIEW = 5
+
+    function groupSessions(sessions) {
+      const byProject = new Map()
+      for (const session of sessions) {
+        const key = session.project || session.cwd || '-'
+        if (!byProject.has(key)) byProject.set(key, { project: key, cwd: session.cwd, sessions: [] })
+        byProject.get(key).sessions.push(session)
+      }
+      const groups = [...byProject.values()]
+      for (const group of groups) {
+        group.sessions.sort(
+          (a, b) =>
+            (STATE_RANK[a.state] ?? 9) - (STATE_RANK[b.state] ?? 9) ||
+            (b.updatedAt ?? 0) - (a.updatedAt ?? 0),
+        )
+        const states = group.sessions.map((s) => s.state)
+        group.waiting = states.filter((x) => x === 'waiting').length
+        group.running = states.filter((x) => x === 'running').length
+        group.rank = Math.min(...states.map((x) => STATE_RANK[x] ?? 9))
+        group.updatedAt = Math.max(...group.sessions.map((s) => s.updatedAt ?? 0))
+      }
+      groups.sort((a, b) => a.rank - b.rank || b.updatedAt - a.updatedAt)
+      return groups
+    }
+
+    /** A project heading: folder glyph, name, and how many sessions need attention. */
+    function ProjectHeader({ t, group, collapsed, onToggle }) {
+      const badge = group.waiting > 0 ? 'warn' : group.running > 0 ? 'business' : null
+      return h(
+        'button',
+        {
+          type: 'button',
+          className: 'cxm-group-head',
+          'data-collapsed': collapsed ? 'true' : 'false',
+          onClick: onToggle,
+          title: group.cwd || group.project,
+        },
+        h('span', { className: 'cxm-group-chevron', 'aria-hidden': 'true' }, collapsed ? '›' : '⌄'),
+        h('span', { className: 'cxm-group-name' }, group.project),
+        badge === null
+          ? null
+          : h(
+              'span',
+              { className: 'cxm-chip', 'data-tone': badge },
+              group.waiting > 0
+                ? t('list.groupWaiting', { n: group.waiting })
+                : t('list.groupRunning', { n: group.running }),
+            ),
+        h('span', { className: 'cxm-group-count' }, String(group.sessions.length)),
+      )
     }
 
     /** One row in the left list. Selecting it drives the conversation pane. */
@@ -657,6 +739,10 @@ window.__ModuleLoader__.load({
       const t = React.useContext(TranslationContext)
       const snapshot = useSnapshot()
       const [selectedId, setSelectedId] = useState(null)
+      // Collapsed projects, keyed by project name. Absent means expanded.
+      const [collapsed, setCollapsed] = useState({})
+      // Projects whose full session list was expanded past the default cap.
+      const [expanded, setExpanded] = useState({})
       const [detail, setDetail] = useState(null)
       const [detailError, setDetailError] = useState(null)
 
@@ -728,19 +814,61 @@ window.__ModuleLoader__.load({
         if (sessions.length === 0) {
           return h('div', { className: 'cxm-blank' }, t('page.empty'))
         }
-        return sessions.map((session) =>
-          h(SessionRow, {
-            key: session.id,
+        const pick = (id) => {
+          setSelectedId(id)
+          setDetail(null)
+          setDetailError(null)
+        }
+        const groups = groupSessions(sessions)
+        // A single project needs no heading; the grouping only earns its keep once
+        // there is something to group.
+        if (groups.length === 1) {
+          return groups[0].sessions.map((session) =>
+            h(SessionRow, { key: session.id, t, session, selected: session.id === selectedId, onSelect: pick }),
+          )
+        }
+        return groups.flatMap((group) => {
+          const isCollapsed = collapsed[group.project] === true
+          const head = h(ProjectHeader, {
+            key: `h:${group.project}`,
             t,
-            session,
-            selected: session.id === selectedId,
-            onSelect: (id) => {
-              setSelectedId(id)
-              setDetail(null)
-              setDetailError(null)
-            },
-          }),
-        )
+            group,
+            collapsed: isCollapsed,
+            onToggle: () =>
+              setCollapsed((prev) => ({ ...prev, [group.project]: !isCollapsed })),
+          })
+          if (isCollapsed) return [head]
+          // One busy project can hold dozens of sessions; show the most urgent few and
+          // let the reader pull the rest open, the way Codex's own sidebar does.
+          const open = expanded[group.project] === true
+          const shown = open ? group.sessions : group.sessions.slice(0, GROUP_PREVIEW)
+          const hidden = group.sessions.length - shown.length
+          return [
+            head,
+            ...shown.map((session) =>
+              h(SessionRow, {
+                key: session.id,
+                t,
+                session,
+                selected: session.id === selectedId,
+                onSelect: pick,
+              }),
+            ),
+            hidden > 0
+              ? h(
+                  'button',
+                  {
+                    key: `m:${group.project}`,
+                    type: 'button',
+                    className: 'cxm-group-more',
+                    onClick: () =>
+                      setExpanded((prev) => ({ ...prev, [group.project]: true })),
+                  },
+                  t('list.showMore', { n: hidden }),
+                )
+              : null,
+          ]
+        })
       }
 
       return h(
