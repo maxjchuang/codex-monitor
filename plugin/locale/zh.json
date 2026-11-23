@@ -5,51 +5,63 @@
     "detail": "docs/DETAIL.md"
   },
   "panel": {
-    "label": "Codex 监控"
+    "label": "Codex 监控",
+    "labelWaiting": "Codex 监控（{n} 个等你回答）"
   },
   "page": {
     "title": "Codex 监控",
     "refresh": "刷新",
-    "refreshHint": "立即重新读取会话状态",
     "empty": "没读到 Codex 会话。请确认 ~/.codex 存在，且桌面版至少跑过一次。",
     "errorTitle": "读取 Codex 状态失败",
     "retry": "重试",
-    "pythonMissing": "这台机器上找不到 python3。请把它的路径设到 CODEX_MONITOR_PYTHON 后重新加载插件。",
+    "pythonMissing": "这台机器上找不到 python3。请把路径设到 CODEX_MONITOR_PYTHON 后重新加载插件。",
     "counts": "{total} 个会话 · {running} 正在跑 · {waiting} 等你回复",
-    "noWaiting": "没有会话在等你。",
-    "generatedAt": "更新于 {time}"
+    "updated": "更新于 {time}"
   },
   "state": {
     "running": "正在跑",
     "waiting": "等你回答",
     "done": "已完成",
     "failed": "失败",
-    "stopped": "已停下"
+    "stopped": "已停下",
+    "idle": "空闲"
   },
   "row": {
-    "details": "详情",
-    "reply": "回复",
-    "hide": "收起",
-    "lastAction": "最新动作",
-    "noActions": "暂无动作记录",
     "started": "开始 {time}",
     "duration": "用时 {seconds}s",
     "model": "模型",
     "directory": "目录",
-    "id": "会话"
+    "id": "会话",
+    "timing": "计时中"
   },
   "reply": {
-    "placeholder": "要发进这个 Codex 会话的消息…",
+    "placeholder": "给这个 Codex 会话发消息…",
     "send": "发送",
     "sending": "发送中…",
     "cancel": "取消",
-    "sent": "已投递，Codex 稍后会处理。",
+    "sent": "已提交给 Codex，稍后会处理。",
     "failed": "投递失败：{error}",
-    "queuedNote": "这会作为新的一轮追加进去，不会打断正在跑的任务。"
+    "note": "追加为新的一轮，不打断正在跑的任务。⌘↵ 发送。",
+    "options": "Codex 给出的选项（点击填入，需你自己发送）："
   },
   "list": {
     "groupWaiting": "{n} 个等你回答",
     "groupRunning": "{n} 个正在跑",
-    "showMore": "展开显示 {n} 个"
+    "showMore": "展开显示 {n} 个",
+    "title": "会话",
+    "empty": "还没有会话"
+  },
+  "chat": {
+    "placeholderPick": "从左边选一个会话，看它做到哪一步。",
+    "placeholderPickHint": "也可以直接在这里给它派活。",
+    "loading": "正在读取对话…",
+    "empty": "这个会话还没有内容。",
+    "error": "读不到这个会话：{error}",
+    "retry": "重试",
+    "you": "你",
+    "agent": "Codex",
+    "askingYou": "Codex 在等你回答",
+    "transcriptTruncated": "只显示最近 {n} 条。",
+    "actionRun": "共 {n} 步"
   }
 }

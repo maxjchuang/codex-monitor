@@ -123,7 +123,7 @@ const rows = groups
           <span class="cxm-group-slot">
             <span class="cxm-group-folder">${folder(true)}</span>
             <span class="cxm-group-chevron">
-              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="transform:rotate(90deg)"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </span>
           </span>
           <span class="cxm-group-name">${project}</span>
@@ -242,7 +242,7 @@ body{background:var(--dsw-alias-bg-base)}
       </div>
       <div class="cxm-input-row">
         <textarea class="cxm-textarea" placeholder="给这个 Codex 会话发消息…"></textarea>
-        <button class="cxm-btn" data-primary="true">发送</button>
+        <button class="cxm-send">发送</button>
       </div>
       <div class="cxm-note">追加为新的一轮，不打断正在跑的任务。⌘↵ 发送。</div>
     </div>

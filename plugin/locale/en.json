@@ -5,51 +5,63 @@
     "detail": "docs/DETAIL.md"
   },
   "panel": {
-    "label": "Codex monitor"
+    "label": "Codex monitor",
+    "labelWaiting": "Codex monitor ({n} waiting)"
   },
   "page": {
     "title": "Codex monitor",
     "refresh": "Refresh",
-    "refreshHint": "Reload session state now",
     "empty": "No Codex sessions found. Check that ~/.codex exists and the desktop app has run at least once.",
     "errorTitle": "Could not read Codex state",
     "retry": "Retry",
-    "pythonMissing": "python3 was not found on this machine. Set CODEX_MONITOR_PYTHON to its path and reload the plugin.",
+    "pythonMissing": "python3 was not found. Set CODEX_MONITOR_PYTHON to its path and reload the plugin.",
     "counts": "{total} sessions · {running} running · {waiting} waiting",
-    "noWaiting": "Nothing is waiting for you.",
-    "generatedAt": "Updated {time}"
+    "updated": "Updated {time}"
   },
   "state": {
     "running": "Running",
     "waiting": "Waiting for you",
     "done": "Done",
     "failed": "Failed",
-    "stopped": "Stopped"
+    "stopped": "Stopped",
+    "idle": "Idle"
   },
   "row": {
-    "details": "Details",
-    "reply": "Reply",
-    "hide": "Hide",
-    "lastAction": "Latest",
-    "noActions": "No recorded actions yet",
     "started": "Started {time}",
     "duration": "Took {seconds}s",
     "model": "Model",
     "directory": "Directory",
-    "id": "Session"
+    "id": "Session",
+    "timing": "Timing"
   },
   "reply": {
-    "placeholder": "Message to send into this Codex session…",
+    "placeholder": "Message this Codex session…",
     "send": "Send",
     "sending": "Sending…",
     "cancel": "Cancel",
-    "sent": "Delivered. Codex will pick it up shortly.",
+    "sent": "Submitted to Codex; it will pick this up shortly.",
     "failed": "Could not deliver: {error}",
-    "queuedNote": "Codex appends this as a new turn; it does not interrupt work already running."
+    "note": "Appends a new turn; does not interrupt work already running. ⌘↵ sends.",
+    "options": "Options Codex offered (click to fill in, you still send):"
   },
   "list": {
     "groupWaiting": "{n} waiting",
     "groupRunning": "{n} running",
-    "showMore": "Show {n} more"
+    "showMore": "Show {n} more",
+    "title": "Sessions",
+    "empty": "No sessions yet"
+  },
+  "chat": {
+    "placeholderPick": "Pick a session on the left to see where it got to.",
+    "placeholderPickHint": "You can also dispatch work to it from here.",
+    "loading": "Reading the conversation…",
+    "empty": "This session has no messages yet.",
+    "error": "Could not read this session: {error}",
+    "retry": "Retry",
+    "you": "You",
+    "agent": "Codex",
+    "askingYou": "Codex is waiting for your answer",
+    "transcriptTruncated": "Showing the latest {n} entries only.",
+    "actionRun": "{n} steps"
   }
 }

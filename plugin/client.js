@@ -31,6 +31,9 @@ window.__ModuleLoader__.load({
       'page.updated': '更新于 {time}',
       'list.title': '会话',
       'list.empty': '还没有会话',
+      'list.groupWaiting': '{n} 个等你回答',
+      'list.groupRunning': '{n} 个正在跑',
+      'list.showMore': '展开显示 {n} 个',
       'state.running': '正在跑',
       'state.waiting': '等你回答',
       'state.done': '已完成',
@@ -76,6 +79,9 @@ window.__ModuleLoader__.load({
       'page.updated': 'Updated {time}',
       'list.title': 'Sessions',
       'list.empty': 'No sessions yet',
+      'list.groupWaiting': '{n} waiting',
+      'list.groupRunning': '{n} running',
+      'list.showMore': 'Show {n} more',
       'state.running': 'Running',
       'state.waiting': 'Waiting for you',
       'state.done': 'Done',
@@ -236,7 +242,12 @@ window.__ModuleLoader__.load({
 .cxm-group-head{height:34px;color:var(--dsw-alias-label-secondary);margin-top:6px}
 .cxm-group-slot{width:16px;height:20px;flex:none;display:inline-flex;align-items:center;
   justify-content:center;color:var(--dsw-alias-label-tertiary)}
-.cxm-group-chevron{display:none}
+/* 箭头画的是「指向右」的形状；DSH 用旋转来表达开合：
+   收起时指右，展开时转 90° 指下。旋转放在内层 svg 上，避免影响布局。 */
+.cxm-group-chevron{display:none;align-items:center;justify-content:center}
+.cxm-group-chevron svg{transition:transform .15s var(--ds-ease-in-out)}
+.cxm-group-head[data-collapsed='true'] .cxm-group-chevron svg{transform:rotate(0deg)}
+.cxm-group-head[data-collapsed='false'] .cxm-group-chevron svg{transform:rotate(90deg)}
 .cxm-group-head:hover .cxm-group-folder{display:none}
 .cxm-group-head:hover .cxm-group-chevron{display:inline-flex}
 .cxm-group-head[data-collapsed='true'] .cxm-group-folder{display:none}
@@ -390,6 +401,18 @@ window.__ModuleLoader__.load({
 .cxm-btn[data-primary='true']{background:var(--dsw-alias-button-primary-fill);
   color:var(--dsw-alias-label-primary-foreground);border-color:transparent}
 .cxm-btn:disabled{opacity:.4;cursor:default}
+/* 发送键：DSH 的主按钮是实心圆角块，不是描边小按钮。它贴在输入区右下角，
+   高度与单行输入一致，禁用时只降透明度、不改变形状，避免点击时按钮跳动。 */
+.cxm-send{flex:none;display:inline-flex;align-items:center;justify-content:center;
+  height:32px;padding:0 14px;border:0;border-radius:var(--dsw-radius-lg);
+  background:var(--dsw-alias-button-primary-fill);
+  color:var(--dsw-alias-label-primary-foreground);
+  font-family:inherit;font-size:13px;line-height:20px;font-weight:500;
+  cursor:pointer;transition:background-color .12s}
+.cxm-send:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}
+.cxm-send:disabled{opacity:.35;cursor:default}
+.cxm-send:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset:2px}
 .cxm-note{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
 .cxm-ok{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;
   display:flex;gap:6px;align-items:center}
@@ -970,8 +993,7 @@ window.__ModuleLoader__.load({
             'button',
             {
               type: 'button',
-              className: 'cxm-btn',
-              'data-primary': 'true',
+              className: 'cxm-send',
               disabled: busy || draft.trim().length === 0,
               onClick: submit,
             },

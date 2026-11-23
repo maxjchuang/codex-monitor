@@ -179,6 +179,41 @@ const translate = (key, params) => {
   return s
 }
 
+// 内联字典与 locale/*.json 的 key 必须完全一致。
+function dictParityChecks() {
+  let inline = null
+  try {
+    inline = pluginDict
+  } catch {
+    inline = null
+  }
+  const zhJson = JSON.parse(readFileSync('./locale/zh.json', 'utf8'))
+  const enJson = JSON.parse(readFileSync('./locale/en.json', 'utf8'))
+  const flatten = (obj, prefix = '', out = {}) => {
+    for (const [k, v] of Object.entries(obj)) {
+      const key = prefix ? `${prefix}.${k}` : k
+      if (v && typeof v === 'object') flatten(v, key, out)
+      else out[key] = v
+    }
+    return out
+  }
+  const zhFlat = flatten(zhJson)
+  const enFlat = flatten(enJson)
+  // meta.* 是插件清单（名称/描述/详情页）用的，由 DSH 读取，不属于界面字典。
+  const isUiKey = (k) => !k.startsWith('meta.')
+  const inlineKeys = Object.keys(inline ?? {}).filter(isUiKey).sort()
+  const zhKeys = Object.keys(zhFlat).filter(isUiKey).sort()
+  const enKeys = Object.keys(enFlat).filter(isUiKey).sort()
+  const missingInInline = zhKeys.filter((k) => !inlineKeys.includes(k))
+  const missingInJson = inlineKeys.filter((k) => !zhKeys.includes(k))
+  return [
+    ['inline dict matches locale/zh.json',
+      missingInInline.length === 0 && missingInJson.length === 0,
+      `only-in-json=${missingInInline.join(',')} only-in-inline=${missingInJson.join(',')}`],
+    ['zh and en cover the same keys', zhKeys.join() === enKeys.join()],
+  ]
+}
+
 // ── load the plugin ───────────────────────────────────────────────────────────
 const source = readFileSync('./client.js', 'utf8')
 // Real timers would never fire inside a synchronous render pass, so record the
@@ -190,8 +225,20 @@ new Function('window', 'document', 'fetch', 'setInterval', 'clearInterval', 'Abo
 )
 
 const regs = []
+// 用插件自己注册的字典来翻译，而不是夹具里另写一份：否则 client.js 漏了某个 key，
+// 测试会用夹具里的同名 key 蒙混过关，线上却显示原始 key。
+let pluginDict = null
+const t = (key, vars) => {
+  // 插件字典注册之后就以它为唯一来源：回退到夹具会掩盖 client.js 漏 key 的问题。
+  const raw = pluginDict ? pluginDict[key] : translate(key, vars)
+  if (typeof raw !== 'string') return key
+  return vars ? raw.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)) : raw
+}
 const ctx = {
-  locale: { register: () => () => {}, bind: () => translate },
+  locale: {
+    register: (ns, dicts) => { pluginDict = dicts.zh || null; return () => {} },
+    bind: () => t,
+  },
   effect: (fn) => fn(),
   slots: { inject: (s, fn) => fn(), register: (o, c) => { regs.push({ o, c }); return () => {} } },
 }
@@ -283,6 +330,9 @@ const checks = [
   ['transcript: option buttons offered', joined.includes('删除这条临时记录')],
   ['composer present', joined.includes('给这个 Codex 会话发消息…') && joined.includes('发送')],
   ['composer clears on session switch', joined.includes('给这个 Codex 会话发消息…')],
+  // 内联字典和 locale/*.json 必须一致：线上只用内联字典，JSON 只给文档/工具读，
+  // 两边漂移就会出现「代码里有、界面显示原始 key」。
+  ...dictParityChecks(),
   ['no raw locale keys leaked', !/(^|\| )(page|state|row|chat|reply|list|age)\./.test(joined)],
 ]
 let bad = 0
