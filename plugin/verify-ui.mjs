@@ -250,6 +250,9 @@ const classes = []
 const clickables = []
 let listOpenAttr = null
 let drawerAttr = null
+let dockParent = null
+let cardFound = false
+const allButtons = []   // 跨渲染累积，方便找只出现在某次渲染里的按钮
 function walk(node, at) {
   if (node === null || node === undefined || node === false) return
   if (Array.isArray(node)) { node.forEach((n, i) => walk(n, `${at}/${i}`)); return }
@@ -286,8 +289,12 @@ function walk(node, at) {
   if (typeof cls === 'string' && cls.includes('cxm-page')) {
     drawerAttr = node.props['data-drawer']
   }
+  if (cls === 'cxm-dock') dockParent = node
+  if (cls === 'cxm-card') cardFound = true
   if (typeof node.type === 'string' && node.type === 'button' && typeof node.props?.onClick === 'function') {
-    clickables.push({ cls: cls || '', label: node.props['aria-label'] || node.props.title || '', onClick: node.props.onClick })
+    const rec = { cls: cls || '', label: node.props['aria-label'] || node.props.title || '', onClick: node.props.onClick, node }
+    clickables.push(rec)
+    if (!allButtons.some((b) => b.node === node)) allButtons.push(rec)
   }
   // A textarea's prompt is a prop, not a child; surface it as visible copy too.
   const ph = node.props?.placeholder ?? node.props?.['aria-label']
@@ -365,6 +372,10 @@ const checks = [
   ['narrow drawer renders a scrim', narrow_drawer_has_scrim()],
   ['narrow page is marked as drawer', narrow_marks_drawer()],
   ['desktop is not a drawer', desktopDrawerAttr === 'false'],
+  ['send button is an icon button', send_is_icon_button()],
+  ['send button has no text label', send_has_no_text()],
+  ['send button sits in its own dock row', send_is_in_dock()],
+  ['composer is a card, not a bordered row', composer_is_card()],
 ]
 // ── list collapse ─────────────────────────────────────────────────────────────
 function toggle_hides_list() {
@@ -437,6 +448,43 @@ function narrow_marks_drawer() {
     remountAndRender()
     return drawerAttr === 'true'
   })
+}
+
+// ── send button ──────────────────────────────────────────────────────────────
+// DSH 的发送键是 34x34 的正圆图标按钮（.uV2eYG_primary），不是带文字的胶囊。
+// 这两条钉住「是图标」和「没有文字」，防止退回带文案的按钮。
+function sendButton() {
+  // Composer 只在选中会话后渲染，而那一步是异步的，所以从跨渲染累积的列表里找。
+  const b = allButtons.find((x) => x.cls.includes('cxm-send'))
+  return b && b.node
+}
+
+function send_is_icon_button() {
+  const n = sendButton()
+  if (!n) return false
+  const kids = n.children || []
+  const svg = kids.find((c) => c && c.type === 'svg')
+  if (!svg) return false
+  // 34x34 正圆：宽高相等且等于 34，圆角 999px 写在 CSS 里（CSS 另有检查）。
+  return svg.props.width === 16 && svg.props.height === 16
+}
+
+function send_has_no_text() {
+  const n = sendButton()
+  if (!n) return false
+  // 子节点里不应该出现裸字符串（「发送」这类文案）。
+  return !(n.children || []).some((c) => typeof c === 'string')
+}
+
+function send_is_in_dock() {
+  // DSH 把按钮放在卡片底部的 dock 里，单独一行靠右；不跟 textarea 并排。
+  const b = allButtons.find((x) => x.cls.includes('cxm-send'))
+  if (!b) return false
+  return b.cls === 'cxm-send' && dockParent !== null
+}
+
+function composer_is_card() {
+  return cardFound
 }
 
 let bad = 0
