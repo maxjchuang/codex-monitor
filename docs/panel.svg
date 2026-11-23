@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="430" viewBox="0 0 880 430" role="img" aria-label="Codex monitor panel: a sidebar entry with a waiting badge, and a session list where the waiting session sorts first">
+  <defs>
+    <style>
+      text { font-family: -apple-system, "Helvetica Neue", "PingFang SC", sans-serif; }
+      .bg { fill: #1b1b1f; }
+      .side { fill: #16161a; }
+      .card { fill: #212127; stroke: #35353d; stroke-width: 1; }
+      .card-warn { fill: #212127; stroke: #d9a441; stroke-width: 1.5; }
+      .t { fill: #e8e8ea; font-size: 13px; }
+      .dim { fill: #9a9aa3; font-size: 12px; }
+      .faint { fill: #6e6e78; font-size: 11px; }
+      .h { fill: #e8e8ea; font-size: 20px; font-weight: 500; }
+      .blue { fill: #679efe; }
+      .warn { fill: #d9a441; }
+      .ok { fill: #41c98a; }
+      .chip-warn-bg { fill: #3a3021; }
+      .chip-run-bg { fill: #1f2a3a; }
+      .chip-ok-bg { fill: #1f2a24; }
+      .row-sel { fill: #26262e; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="880" height="430" rx="10"/>
+  <rect class="side" width="188" height="430"/>
+  <line x1="188" y1="0" x2="188" y2="430" stroke="#2b2b33"/>
+
+  <!-- sidebar -->
+  <text class="faint" x="16" y="28">会话</text>
+  <rect class="row-sel" x="8" y="42" width="172" height="30" rx="6"/>
+  <text class="dim" x="24" y="62">对话</text>
+
+  <rect class="row-sel" x="8" y="86" width="172" height="34" rx="6"/>
+  <g transform="translate(20,95)">
+    <path d="M2 3 L7 8 L2 13" fill="none" stroke="#679efe" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="9" y1="13" x2="15" y2="13" stroke="#679efe" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="16" cy="1.5" r="3" fill="#d9a441"/>
+  </g>
+  <text class="t" x="48" y="108">Codex 监控</text>
+
+  <text class="faint" x="16" y="152">设置</text>
+  <text class="dim" x="24" y="178">插件</text>
+
+  <!-- panel header -->
+  <text class="h" x="212" y="44">Codex 监控</text>
+  <text class="faint" x="212" y="66" font-size="13">6 个会话 · 2 正在跑 · 1 等你回复 · 更新于 18:16</text>
+  <rect x="800" y="30" width="52" height="24" rx="6" fill="none" stroke="#3a3a44"/>
+  <text class="dim" x="815" y="46">刷新</text>
+
+  <!-- waiting row (expanded) -->
+  <rect class="card-warn" x="212" y="88" width="640" height="104" rx="10"/>
+  <circle class="warn" cx="232" cy="112" r="3.5"/>
+  <rect class="chip-warn-bg" x="244" y="101" width="62" height="22" rx="11"/>
+  <text class="warn" x="254" y="116" font-size="11">等你回答</text>
+  <text class="dim" x="320" y="116">other-project</text>
+  <text class="t" x="410" y="116">Port the settings page</text>
+  <text class="faint" x="836" y="116" text-anchor="end">18:16</text>
+
+  <line x1="232" y1="132" x2="232" y2="172" stroke="#d9a441" stroke-width="3"/>
+  <text class="t" x="244" y="146">删掉这条多余记录 rec123，还是留着测试用？</text>
+  <text class="faint" x="244" y="166">点击展开 → 查看最近动作并回复（不会替你回答）</text>
+
+  <!-- running row -->
+  <rect class="card" x="212" y="200" width="640" height="62" rx="10"/>
+  <circle class="blue" cx="232" cy="224" r="3.5"/>
+  <rect class="chip-run-bg" x="244" y="213" width="58" height="22" rx="11"/>
+  <text class="blue" x="256" y="228" font-size="11">正在跑</text>
+  <text class="dim" x="316" y="228">my-project</text>
+  <text class="t" x="396" y="228">Refactor the auth middleware</text>
+  <text class="faint" x="836" y="228" text-anchor="end">18:16</text>
+  <text class="faint" x="232" y="248">Codex 说：先把 token 校验抽成独立函数。</text>
+
+  <!-- done row -->
+  <rect class="card" x="212" y="272" width="640" height="62" rx="10"/>
+  <circle class="ok" cx="232" cy="296" r="3.5"/>
+  <rect class="chip-ok-bg" x="244" y="285" width="58" height="22" rx="11"/>
+  <text class="ok" x="256" y="300" font-size="11">已完成</text>
+  <text class="dim" x="316" y="300">base-ui</text>
+  <text class="t" x="376" y="300">Bitable GridView 组件对照</text>
+  <text class="faint" x="836" y="300" text-anchor="end">18:02</text>
+  <text class="faint" x="232" y="320">Codex 结论：15 列已对齐，6 条记录，15 个业务字段。</text>
+
+  <!-- footer notes -->
+  <text class="faint" x="212" y="368" font-size="12">状态判定：提问 &gt; turn 终态 &gt; inProgress &gt; 活动心跳</text>
+  <text class="faint" x="212" y="390" font-size="12">派活会追加一轮，不打断正在执行的任务</text>
+  <text class="faint" x="212" y="412" font-size="12">侧栏红点在页面关闭时仍然可见</text>
+</svg>

@@ -1,0 +1,4 @@
+- insert:
+    - id: codex-monitor
+      name: '@local/codex-monitor'
+      config: {}

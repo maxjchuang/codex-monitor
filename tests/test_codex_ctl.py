@@ -95,6 +95,31 @@ class TestLiveState(TempDbs):
         kind, _ = c.live_state("t", {"status": "completed"}, None, now_ms=1000 + 600_000)
         self.assertEqual(kind, "done")
 
+    def test_completed_beats_fresh_heartbeat(self):
+        """回归：已完成的轮次即使心跳新鲜也必须判 done。
+
+        实测 98.7% 的已完成轮次最后一条动作距完成不到 90s；若让心跳优先，
+        用户会看到“干完了还在跑”。
+        """
+        self.add_turn("t", "completed", duration_ms=1000)
+        self.add_item("t", "agentMessage", {"text": "好了"}, at_ms=1000)
+        kind, _ = c.live_state("t", {"status": "completed"}, None, now_ms=1000 + 5_000)
+        self.assertEqual(kind, "done")
+
+    def test_in_progress_is_running_even_when_quiet(self):
+        """inProgress 是明确信号，静默也不能判成 stopped。"""
+        self.add_turn("t", "inProgress")
+        self.add_item("t", "reasoning", {}, at_ms=1000)
+        kind, _ = c.live_state("t", {"status": "inProgress"}, None, now_ms=1000 + 900_000)
+        self.assertEqual(kind, "running")
+
+    def test_long_silence_within_window_stays_running(self):
+        """回归：跑长命令会有 >90s 静默，窗口内不能误判成已停下。"""
+        self.add_turn("t", "interrupted")
+        self.add_item("t", "reasoning", {}, at_ms=1000)
+        kind, _ = c.live_state("t", {"status": "interrupted"}, None, now_ms=1000 + 120_000)
+        self.assertEqual(kind, "running")
+
     def test_failed_reported(self):
         self.add_turn("t", "failed")
         self.add_item("t", "reasoning", {}, at_ms=1000)

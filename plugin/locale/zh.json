@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "Codex 监控",
+    "description": "在左侧栏直接查看本机 Codex 桌面版的会话：哪些正在跑、在做什么、哪个正在等你回答。也可以不切窗口就给它派活。",
+    "detail": "docs/DETAIL.md"
+  },
+  "panel": {
+    "label": "Codex 监控"
+  },
+  "page": {
+    "title": "Codex 监控",
+    "refresh": "刷新",
+    "refreshHint": "立即重新读取会话状态",
+    "empty": "没读到 Codex 会话。请确认 ~/.codex 存在，且桌面版至少跑过一次。",
+    "errorTitle": "读取 Codex 状态失败",
+    "retry": "重试",
+    "pythonMissing": "这台机器上找不到 python3。请把它的路径设到 CODEX_MONITOR_PYTHON 后重新加载插件。",
+    "counts": "{total} 个会话 · {running} 正在跑 · {waiting} 等你回复",
+    "noWaiting": "没有会话在等你。",
+    "generatedAt": "更新于 {time}"
+  },
+  "state": {
+    "running": "正在跑",
+    "waiting": "等你回答",
+    "done": "已完成",
+    "failed": "失败",
+    "stopped": "已停下"
+  },
+  "row": {
+    "details": "详情",
+    "reply": "回复",
+    "hide": "收起",
+    "lastAction": "最新动作",
+    "noActions": "暂无动作记录",
+    "started": "开始 {time}",
+    "duration": "用时 {seconds}s",
+    "model": "模型",
+    "directory": "目录",
+    "id": "会话"
+  },
+  "reply": {
+    "placeholder": "要发进这个 Codex 会话的消息…",
+    "send": "发送",
+    "sending": "发送中…",
+    "cancel": "取消",
+    "sent": "已投递，Codex 稍后会处理。",
+    "failed": "投递失败：{error}",
+    "queuedNote": "这会作为新的一轮追加进去，不会打断正在跑的任务。"
+  }
+}

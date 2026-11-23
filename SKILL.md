@@ -10,7 +10,9 @@ metadata:
 
 # codex-monitor
 
-用 `codex_ctl.py` 读写本机 Codex 的真实状态。它走两条通道：
+用 `codex_ctl.py` 读写本机 Codex 的真实状态。用户也可以在 DSH 左侧栏的「Codex 监控」里直接看和派活，两条入口共用同一份实现。
+
+它走两条通道：
 
 - **状态**：`codex app-server` JSON-RPC（权威，能反映正在跑/已停下/等你回答）
 - **明细**：`~/.codex/thread_history_1.sqlite`（正在执行的命令、改的文件、子 agent 活动）
@@ -36,7 +38,15 @@ python3 ~/.agents/skills/codex-monitor/codex_ctl.py send --thread ID --message "
 
 # 在指定目录开新会话派活
 python3 ~/.agents/skills/codex-monitor/codex_ctl.py new --cwd DIR --message "..." [--wait 120]
+
+# 长驻 JSON 服务（DSH 插件用它；一个进程复用同一个 app-server）
+python3 ~/.agents/skills/codex-monitor/codex_ctl.py serve [--port N]
+
+# 机器可读输出：list / status / send 都支持 --json
+python3 ~/.agents/skills/codex-monitor/codex_ctl.py send --thread ID --message "..." --json
 ```
+
+`send --json` 失败时输出 `{"ok": false, "error": "..."}` 并以非零退出，便于判断是否真的送达。
 
 ## 使用要点
 
@@ -45,7 +55,9 @@ python3 ~/.agents/skills/codex-monitor/codex_ctl.py new --cwd DIR --message "...
 - **`send` 默认只投递**（`--wait 0`）。用户要结果时才加 `--wait`，避免长时间阻塞。
 - **`send` 会续接原会话上下文**，相当于用户自己在那个窗口里接着说话。
 - **派活前确认目标会话**：写错 `--thread` 会把任务塞进无关项目。若用户没说清楚是哪个会话，先用 `list` 展示候选让用户选。
-- **状态判断以 app-server 为准**。`thread_history_1.sqlite` 的 `inProgress` 会滞后几分钟，别用它判断“是否在跑”。
+- **状态判断有明确优先级**：有待回答问题 → `waiting`；`turn.status` 是终态（`completed`/`failed`）→ 直接采信；`inProgress` → `running`；只有 `interrupted`/未知才回落到活动心跳（窗口 300s）。`thread_history_1.sqlite` 的 `inProgress` 会滞后几分钟，别单独拿它判断“是否在跑”。
+- **`send` 需要长驻 app-server 才跑得完**：app-server 进程一退出，在飞的轮次会被标成 `interrupted`，任务等于没执行。所以要在同一个长驻进程里派活（插件用的是 `serve`）。如果看到轮次只跑了几十毫秒就 `interrupted`，就是这个原因。
+- **同一个会话同一时刻只能有一个写入者**：面板开着时，CLI 对同一 thread `send` 会报 `already has an active writer`。改用面板，或先关掉它。
 - **`watch` 是长任务**，要后台跑（`run_in_background`），别在前台阻塞；用户想“盯着它”时才用。
 
 ## 汇报格式建议
