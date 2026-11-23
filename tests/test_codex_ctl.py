@@ -224,6 +224,19 @@ class TestThreads(TempDbs):
         conn.close()
         self.assertEqual(c.latest_threads(5)[0]["projectName"], "Faster")
 
+    def test_empty_threads_are_hidden(self):
+        """有 turn 但没有任何内容的空壳会话不显示。"""
+        conn = sqlite3.connect(c.STATE_DB)
+        conn.execute(
+            "insert into threads (id,title,cwd,updated_at) values ('empty','','/p',9)"
+        )
+        conn.execute(
+            "insert into threads (id,title,cwd,updated_at) values ('real','真的任务','/p',1)"
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual([t["id"] for t in c.latest_threads(5)], ["real"])
+
     def test_subagent_threads_are_hidden(self):
         """子 agent 的线程不是独立会话，不应出现在列表里。"""
         conn = sqlite3.connect(c.STATE_DB)

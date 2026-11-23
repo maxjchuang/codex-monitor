@@ -126,6 +126,10 @@ def latest_threads(limit=20, include_archived=False):
             "rollout_path, is_pinned, source, thread_source, preview "
             "from threads "
             "where coalesce(thread_source, '') != 'subagent' "
+            # 既没有 name 也没有首条消息的会话是空壳（有 turn 但没有任何 item），
+            # Codex 侧栏也不显示，留着只会占位置。
+            "  and (coalesce(name, '') != '' or coalesce(title, '') != '' "
+            "       or coalesce(preview, '') != '') "
             "order by updated_at desc limit ?",
             (limit,),
         ).fetchall()
