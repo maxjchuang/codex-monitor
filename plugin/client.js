@@ -187,51 +187,69 @@ window.__ModuleLoader__.load({
   background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);
   font-size:var(--dsh-content-font-size,14px)}
 
-/* left: session list */
-.cxm-list-pane{flex:none;width:clamp(212px,24%,300px);display:flex;flex-direction:column;
+/* left: session list
+   Row metrics are taken from DSH's own workspace tree
+   (dsh-client-ui-workspace: .sessionRow / .projectRow) rather than invented, so the
+   list reads as part of the host UI: 32px session rows, 34px project rows, a 16x20
+   icon slot, 12px row padding, 6px icon-to-label gap, and 12px per nesting level. */
+.cxm-list-pane{flex:none;width:clamp(240px,30%,360px);display:flex;flex-direction:column;
   min-height:0;border-right:1px solid var(--dsw-alias-border-l3)}
 .cxm-list-head{padding:calc(20px + var(--dsh-frame-top-clearance,0px)) 14px 10px}
 .cxm-list-title{margin:0;font-size:14px;font-weight:500;display:flex;align-items:center;
   gap:8px;justify-content:space-between}
-.cxm-list-counts{color:var(--dsw-alias-label-tertiary);font-size:11px;margin-top:5px;
-  line-height:1.5}
+.cxm-list-counts{color:var(--dsw-alias-label-tertiary);font-size:12px;margin-top:4px;
+  line-height:20px}
 .cxm-list-body{flex:1;min-height:0;overflow:auto;padding:0 8px 16px;display:flex;
-  flex-direction:column;gap:2px}
-.cxm-row{display:flex;flex-direction:column;gap:3px;width:100%;text-align:left;
-  border:0;border-radius:var(--dsw-radius-sm);background:transparent;color:inherit;
-  padding:9px 10px;cursor:pointer;font-family:inherit;position:relative}
-.cxm-row[data-selected='true']{background:var(--dsw-alias-bg-layer-2)}
-.cxm-row-top{display:flex;align-items:center;gap:6px;min-width:0}
+  flex-direction:column}
+
+/* Shared row geometry: one line, icon slot, ellipsised title. */
+.cxm-row,.cxm-group-head,.cxm-group-more{display:flex;align-items:center;
+  box-sizing:border-box;width:100%;text-align:left;border:0;font-family:inherit;
+  background:transparent;cursor:pointer;color:var(--dsw-alias-label-primary);
+  border-radius:var(--dsw-radius-md);padding:0 8px;gap:var(--dsh-sidebar-label-gap,6px)}
+.cxm-row:hover,.cxm-group-head:hover,.cxm-group-more:hover{
+  background:var(--dsw-alias-interactive-bg-hover)}
+.cxm-row[data-selected='true']{background:var(--dsw-alias-interactive-bg-hover)}
+.cxm-row:focus-visible,.cxm-group-head:focus-visible,.cxm-group-more:focus-visible{
+  outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);outline-offset:-2px}
+
+/* session row: 32px, indented one level under its project */
+.cxm-row{height:32px;padding-inline-start:calc(12px + 12px)}
+.cxm-slot{width:16px;height:20px;flex:none;display:inline-flex;align-items:center;
+  justify-content:center;color:var(--dsw-alias-label-tertiary)}
 .cxm-dot{width:6px;height:6px;border-radius:50%;flex:none}
 .cxm-row-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;font-size:13px;line-height:1.45}
-.cxm-row-time{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary);
-  font-size:11px;flex:none}
-.cxm-row-meta{color:var(--dsw-alias-label-tertiary);font-size:11px;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap;padding-left:12px}
-.cxm-row-ask{color:var(--dsw-alias-state-warn-label);font-size:11px;line-height:1.45;
-  padding-left:12px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
-  overflow:hidden}
-/* project grouping: a quiet heading, the way Codex's own sidebar reads */
-.cxm-group-head{display:flex;align-items:center;gap:6px;width:100%;text-align:left;
-  border:0;background:transparent;color:var(--dsw-alias-label-tertiary);font-family:inherit;
-  font-size:11px;line-height:16px;padding:12px 10px 4px;cursor:pointer;min-width:0}
-.cxm-group-head:hover{color:var(--dsw-alias-label-secondary)}
-.cxm-group-head[data-collapsed='true']{padding-bottom:2px}
-.cxm-group-chevron{flex:none;width:10px;font-size:11px;opacity:.7}
+  white-space:nowrap;font-size:14px;line-height:20px}
+.cxm-row-time{flex:none;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:20px}
+/* A session that waits on the user is the one thing worth breaking the one-line
+   rhythm for, so it carries the question as a second line. */
+.cxm-row[data-waiting='true']{height:auto;min-height:32px;padding-block:6px;
+  flex-wrap:wrap;align-items:flex-start}
+.cxm-row[data-waiting='true'] .cxm-slot{margin-top:6px}
+.cxm-row[data-waiting='true'] .cxm-row-name{white-space:normal;overflow:visible}
+.cxm-row-ask{flex:1 0 100%;color:var(--dsw-alias-state-warn-label);font-size:12px;
+  line-height:18px;padding-left:calc(16px + var(--dsh-sidebar-label-gap,6px));
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+/* project row: 34px, folder glyph that turns into a chevron on hover, as in DSH */
+.cxm-group-head{height:34px;color:var(--dsw-alias-label-secondary);margin-top:6px}
+.cxm-group-slot{width:16px;height:20px;flex:none;display:inline-flex;align-items:center;
+  justify-content:center;color:var(--dsw-alias-label-tertiary)}
+.cxm-group-chevron{display:none}
+.cxm-group-head:hover .cxm-group-folder{display:none}
+.cxm-group-head:hover .cxm-group-chevron{display:inline-flex}
+.cxm-group-head[data-collapsed='true'] .cxm-group-folder{display:none}
+.cxm-group-head[data-collapsed='true'] .cxm-group-chevron{display:inline-flex}
 .cxm-group-name{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;
-  white-space:nowrap;font-weight:500}
+  white-space:nowrap;font-size:14px;line-height:20px;font-weight:400}
 /* The name outranks the badge: a truncated project name defeats the grouping, so
-   the badge shrinks to its dot when space runs out. */
+   the badge shrinks to nothing when space runs out. */
 .cxm-group-head .cxm-chip{flex:0 1 auto;min-width:0;overflow:hidden}
-.cxm-group-count{margin-left:auto;flex:none;font-variant-numeric:tabular-nums;
-  color:var(--dsw-alias-label-caption);font-size:10px}
-.cxm-group-more{display:block;width:100%;text-align:left;border:0;background:none;
-  color:var(--dsw-alias-label-tertiary);font-family:inherit;font-size:11px;line-height:16px;
-  padding:5px 10px 5px 26px;cursor:pointer;border-radius:var(--dsw-radius-sm)}
-.cxm-group-more:hover{color:var(--dsw-alias-label-secondary);
-  background:var(--dsw-alias-interactive-bg-hover)}
-.cxm-group-head+.cxm-row{margin-top:1px}
+.cxm-group-count{flex:none;font-variant-numeric:tabular-nums;
+  color:var(--dsw-alias-label-caption);font-size:12px;line-height:20px}
+.cxm-group-more{height:28px;padding-inline-start:calc(12px + 12px + 16px + 6px);
+  color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:20px}
 
 .cxm-chip{font-size:10px;padding:1px 6px;border-radius:999px;white-space:nowrap;flex:none;
   line-height:1.7;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
@@ -490,6 +508,36 @@ window.__ModuleLoader__.load({
       return groups
     }
 
+    /** Folder and chevron glyphs, sized to the 16x20 slot DSH uses in its tree. */
+    function FolderGlyph({ open = false }) {
+      return h(
+        'svg',
+        { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+        h('path', {
+          d: open
+            ? 'M2 5.5A1.5 1.5 0 0 1 3.5 4h2.6l1.2 1.4h4.2A1.5 1.5 0 0 1 13 6.9v3.6a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 2 10.5z'
+            : 'M2 5A1.5 1.5 0 0 1 3.5 3.5h2.4l1.3 1.5h4.3A1.5 1.5 0 0 1 13 6.5V11a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 2 11z',
+          stroke: 'currentColor',
+          'stroke-width': 1.3,
+          'stroke-linejoin': 'round',
+        }),
+      )
+    }
+
+    function ChevronGlyph() {
+      return h(
+        'svg',
+        { width: 12, height: 12, viewBox: '0 0 12 12', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+        h('path', {
+          d: 'M4.5 2.5 8 6l-3.5 3.5',
+          stroke: 'currentColor',
+          'stroke-width': 1.4,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+        }),
+      )
+    }
+
     /** A project heading: folder glyph, name, and how many sessions need attention. */
     function ProjectHeader({ t, group, collapsed, onToggle }) {
       const badge = group.waiting > 0 ? 'warn' : group.running > 0 ? 'business' : null
@@ -499,10 +547,16 @@ window.__ModuleLoader__.load({
           type: 'button',
           className: 'cxm-group-head',
           'data-collapsed': collapsed ? 'true' : 'false',
+          'aria-expanded': collapsed ? 'false' : 'true',
           onClick: onToggle,
           title: group.cwd || group.project,
         },
-        h('span', { className: 'cxm-group-chevron', 'aria-hidden': 'true' }, collapsed ? '›' : '⌄'),
+        h(
+          'span',
+          { className: 'cxm-group-slot' },
+          h('span', { className: 'cxm-group-folder' }, h(FolderGlyph, { open: !collapsed })),
+          h('span', { className: 'cxm-group-chevron' }, h(ChevronGlyph)),
+        ),
         h('span', { className: 'cxm-group-name' }, group.project),
         badge === null
           ? null
@@ -800,37 +854,32 @@ window.__ModuleLoader__.load({
     /** One row in the left list. Selecting it drives the conversation pane. */
     function SessionRow({ t, session, selected, onSelect }) {
       const waiting = session.state === 'waiting'
+      const showAsk = waiting && session.question
       return h(
         'button',
         {
           type: 'button',
           className: 'cxm-row',
           'data-selected': selected ? 'true' : 'false',
+          'data-waiting': showAsk ? 'true' : 'false',
           'aria-current': selected ? 'true' : undefined,
           onClick: () => onSelect(session.id),
+          title: session.title,
         },
         h(
           'span',
-          { className: 'cxm-row-top' },
+          { className: 'cxm-slot' },
           h('span', {
             className: 'cxm-dot',
             style: {
               background: `var(--dsw-alias-state-${STATE_TOKEN[session.state] ?? 'idle'}-primary)`,
             },
           }),
-          h('span', { className: 'cxm-row-name' }, session.title),
-          h('span', { className: 'cxm-row-time' }, clock(session.updatedAt)),
         ),
-        h(
-          'span',
-          { className: 'cxm-row-meta' },
-          session.state === 'running'
-            ? `${session.project} · ${t('state.running')}`
-            : session.project,
-        ),
-        waiting && session.question
+        h('span', { className: 'cxm-row-name' }, session.title),
+        showAsk
           ? h('span', { className: 'cxm-row-ask' }, session.question)
-          : null,
+          : h('span', { className: 'cxm-row-time' }, clock(session.updatedAt)),
       )
     }
 

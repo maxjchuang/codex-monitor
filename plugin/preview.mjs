@@ -101,6 +101,13 @@ const groups = [
   ]],
 ]
 
+const folder = (open) =>
+  `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="${
+    open
+      ? 'M2 5.5A1.5 1.5 0 0 1 3.5 4h2.6l1.2 1.4h4.2A1.5 1.5 0 0 1 13 6.9v3.6a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 2 10.5z'
+      : 'M2 5A1.5 1.5 0 0 1 3.5 3.5h2.4l1.3 1.5h4.3A1.5 1.5 0 0 1 13 6.5V11a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 2 11z'
+  }" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>`
+
 const rows = groups
   .map(([project, items]) => {
     const waiting = items.filter((i) => i[2] === 'waiting').length
@@ -113,7 +120,12 @@ const rows = groups
           : ''
     const head = `
         <button class="cxm-group-head" title="${project}">
-          <span class="cxm-group-chevron">⌄</span>
+          <span class="cxm-group-slot">
+            <span class="cxm-group-folder">${folder(true)}</span>
+            <span class="cxm-group-chevron">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+          </span>
           <span class="cxm-group-name">${project}</span>
           ${badge}
           <span class="cxm-group-count">${items.length}</span>
@@ -131,14 +143,18 @@ const rows = groups
           : state === 'running' ? 'business'
           : state === 'done' ? 'success'
           : 'idle'
+        const isWaiting = state === 'waiting' && ask
         return `
-        <button class="cxm-row">
-          <span class="cxm-row-top">
+        <button class="cxm-row" data-waiting="${isWaiting ? 'true' : 'false'}">
+          <span class="cxm-slot">
             <span class="cxm-dot" style="background:var(--dsw-alias-state-${tone}-primary)"></span>
-            <span class="cxm-row-name">${title}</span>
-            <span class="cxm-row-time">${time}</span>
           </span>
-          ${ask ? `<span class="cxm-row-ask">${ask}</span>` : ''}
+          <span class="cxm-row-name">${title}</span>
+          ${
+            isWaiting
+              ? `<span class="cxm-row-ask">${ask}</span>`
+              : `<span class="cxm-row-time">${time}</span>`
+          }
         </button>`
       })
       .join('')
