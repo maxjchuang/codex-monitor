@@ -1052,7 +1052,8 @@ def thread_locked(thread_id):
     if not os.path.exists(path):
         return False
     try:
-        with open(path, "a") as handle:
+        # 只读打开：探测锁不需要写权限，也绝不碰 Codex 的数据。
+        with open(path, "r") as handle:
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
