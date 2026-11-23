@@ -69,6 +69,12 @@ const light = {
   '--dsw-alias-state-success-primary': '#16a34a',
   '--dsw-alias-state-business-primary': '#2563eb',
   '--dsw-alias-state-idle-primary': '#9ca3af',
+  // 抽屉相关的 DSH token，值取自 dsh-client-ui-layout / theme 包。
+  '--dsw-alias-bg-mask-1': '#0000003d',
+  '--dsw-mask-blur': 'none',
+  '--ds-transition-duration-slow': '.3s',
+  '--ds-ease-in-out': 'cubic-bezier(.4, 0, .2, 1)',
+  '--dsw-specific-sidebar-fill': '#f7f8fa',
   '--dsw-alias-bg-layer-1': '#ffffff',
   '--dsw-alias-bg-layer-2': '#f2f3f5',
   '--dsw-alias-bg-skeleton': '#0000000a',
@@ -183,10 +189,11 @@ const agent1 = [
 const out = process.argv[2] ?? '/tmp/cxm-preview.png'
 // 变体：collapsed 看收起态，mobile 看窄屏覆盖式抽屉。默认是桌面展开态。
 const variant = process.argv[3] ?? 'default'
-const listOpen = variant === 'collapsed' || variant === 'mobile' ? 'false' : 'true'
+const listOpen = variant === 'collapsed' || variant === 'mobile' || variant === 'drawer-closed' ? 'false' : 'true'
+const drawer = variant === 'mobile' || variant === 'drawer' || variant === 'drawer-closed' ? 'true' : 'false'
 // Chrome headless 的 viewport 最小就是 500px，窗口设更小只会裁掉右边，
 // 截出来的图看着像溢出，其实页面本身没问题。
-const size = variant === 'mobile' ? '500,900' : '1200,760'
+const size = variant.startsWith('mobile') || variant.startsWith('drawer') ? '500,900' : '1200,760'
 const htmlPath = `/tmp/cxm-preview-${variant}.html`
 
 const html = `<!doctype html><meta charset="utf-8"><style>
@@ -197,7 +204,7 @@ ${css}
 body{margin:0;background:var(--dsw-alias-bg-base)}
 .cxm-page{height:100vh}
 </style>
-<div class="cxm-page">
+<div class="cxm-page" data-drawer="${drawer}">
   <div class="cxm-list-pane" data-open="${listOpen}">
     <div class="cxm-list-head">
       <h1 class="cxm-list-title"><span>会话</span><button class="cxm-btn">刷新</button></h1>
@@ -205,6 +212,7 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
     </div>
     <div class="cxm-list-body">${rows}</div>
   </div>
+  <button class="cxm-drawer-mask" aria-hidden="true"></button>
   <div class="cxm-chat-pane">
     <div class="cxm-chat-head">
       <button class="cxm-list-toggle" aria-label="收起会话列表">
@@ -265,7 +273,7 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
   </div>
 </div>`
 
-writeFileSync(htmlPath, html.replaceAll('${listOpen}', listOpen))
+writeFileSync(htmlPath, html.replaceAll('${listOpen}', listOpen).replaceAll('${drawer}', drawer))
 execFileSync(
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   ['--headless', '--disable-gpu', `--screenshot=${out}`, `--window-size=${size}`,

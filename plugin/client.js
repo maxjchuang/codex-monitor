@@ -443,16 +443,48 @@ window.__ModuleLoader__.load({
 .cxm-bad{color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:16px;
   overflow-wrap:anywhere}
 
-/* 窄屏 / 触屏：两栏并排会挤到不可用，改成列表覆盖在对话之上。
-   用 pointer:coarse 而不是固定像素宽度，和 DSH 自己的判断一致。 */
-@media (max-width: 640px) {
-  .cxm-page{position:relative}
-  .cxm-list-pane{position:absolute;inset:0 auto 0 0;z-index:2;
-    width:min(86vw,320px);background:var(--dsw-alias-bg-base);
-    box-shadow:0 0 0 1px var(--dsw-alias-border-l3), 8px 0 24px rgba(0,0,0,.12)}
-  /* 抽屉打开时压一层遮罩：点它就能关掉列表，不用非得找到开合按钮。 */
-  .cxm-scrim{position:absolute;inset:0;z-index:1;border:0;padding:0;
-    background:rgba(0,0,0,.28);cursor:pointer;display:block}
+/* 窄屏适配照抄 DSH 左侧栏（dsh-client-ui-layout）的做法，不自己定断点：
+   - 视口 < 1024 自动收起侧栏（SIDEBAR_AUTO_COLLAPSE = 1024）
+   - 视口 < 768 改成抽屉覆盖（drawer = viewport < 768）
+   - 抽屉用 translate(-100%) 滑出，不用 display:none，才能有过渡
+   - 宽度 min(280, viewport - 48)，和 DSH 的 sidebarWidth 一致
+   - 遮罩用 --dsw-alias-bg-mask-1 + --dsw-mask-blur，不用自造的 rgba
+   抽屉态由 JS 打上 data-drawer，跟 DSH 用 data-sidebar-drawer 一样。 */
+
+/* 抽屉态：列表浮在对话之上，收起时整块平移出屏外。 */
+.cxm-page[data-drawer='true']{position:relative}
+.cxm-page[data-drawer='true'] .cxm-list-pane{position:absolute;inset:0 auto 0 0;z-index:71;
+  width:min(280px, calc(100% - 48px));box-sizing:border-box;
+  /* DSH 在抽屉态把侧栏底色做成半透明玻璃，但那是「容器」层：它底下还有一层
+     不透明的 sidebar-fill 托着，文字不会透出后面的对话。这里列表本身就是容器，
+     所以用不透明底色，只把阴影和圆角交给 DSH 的观感。 */
+  background:var(--dsw-specific-sidebar-fill, var(--dsw-alias-bg-base));
+  border-right:none;
+  box-shadow:0 0 0 .5px var(--dsw-alias-border-l3), 0 8px 32px rgba(0,0,0,.16);
+  transition:transform var(--ds-transition-duration-slow) var(--ds-ease-in-out),
+    visibility 0s linear var(--ds-transition-duration-slow);
+  transform:translate(0);visibility:visible}
+.cxm-page[data-drawer='true'] .cxm-list-pane[data-open='false']{
+  transform:translate(-100%);visibility:hidden}
+/* 列表已经滑出屏幕，display:none 会让过渡失效，所以抽屉态下不再隐藏它。 */
+.cxm-page[data-drawer='true'] .cxm-list-pane[data-open='false']{display:flex}
+
+/* 遮罩：盖住对话，点它关闭列表。 */
+.cxm-drawer-mask{position:absolute;inset:var(--dsh-frame-chrome-top,0px) 0 0;z-index:70;
+  border:0;padding:0;background:var(--dsw-alias-bg-mask-1);
+  -webkit-backdrop-filter:var(--dsw-mask-blur);backdrop-filter:var(--dsw-mask-blur);
+  opacity:0;pointer-events:none;
+  transition:opacity var(--ds-transition-duration-slow) var(--ds-ease-in-out)}
+.cxm-page[data-drawer='true'] .cxm-list-pane[data-open='true'] ~ .cxm-drawer-mask{opacity:1;pointer-events:auto}
+/* 遮罩在 DOM 里必须紧跟列表，用兄弟选择器判断开合，省一份状态。 */
+
+/* 触屏上 DSH 只做一件事：把输入框字号提到 16px，避免 iOS 聚焦时页面被放大。
+   行高它没有改，所以这里也不改。 */
+@media (pointer:coarse) {
+  .cxm-textarea{font-size:16px}
+}
+
+@media (max-width: 767px) {
   .cxm-chat-pane{overflow-x:hidden}
   .cxm-transcript{padding-inline:14px}
   .cxm-composer{padding-inline:14px}
@@ -460,12 +492,6 @@ window.__ModuleLoader__.load({
   .cxm-chat-top{padding-inline:14px}
   /* 长代码行和表格在窄屏必须自己滚动，不能把整页撑宽。 */
   .cxm-md-pre{max-width:100%}
-}
-@media (pointer:coarse) {
-  /* 触屏上 32px 的行高偏紧，抬到 40px 才够点。 */
-  .cxm-row{height:40px}
-  .cxm-group-head{height:40px}
-  .cxm-list-toggle{width:36px;height:36px}
 }
 
 /* shared states */
@@ -1222,10 +1248,21 @@ window.__ModuleLoader__.load({
     }
 
     // ── page ────────────────────────────────────────────────────────────────
-    /** 窄屏判定。SSR/测试环境没有 matchMedia 时按桌面处理。 */
+    // DSH 左侧栏的两个阈值（dsh-client-ui-layout）：
+    // 视口 < 1024 自动收起侧栏，视口 < 768 改成抽屉覆盖。
+    const SIDEBAR_AUTO_COLLAPSE = 1024
+    const DRAWER_MAX = 768
+
+    /** 视口是否窄到该自动收起侧栏。SSR/测试环境没有 matchMedia 时按桌面处理。 */
     function isNarrow() {
       if (typeof window === 'undefined' || !window.matchMedia) return false
-      return window.matchMedia('(max-width: 640px)').matches
+      return window.matchMedia(`(max-width: ${SIDEBAR_AUTO_COLLAPSE - 1}px)`).matches
+    }
+
+    /** 视口是否窄到该把侧栏改成抽屉覆盖。 */
+    function isDrawer() {
+      if (typeof window === 'undefined' || !window.matchMedia) return false
+      return window.matchMedia(`(max-width: ${DRAWER_MAX - 1}px)`).matches
     }
 
     function MonitorPage() {
@@ -1236,24 +1273,36 @@ window.__ModuleLoader__.load({
       const [collapsed, setCollapsed] = useState({})
       // Projects whose full session list was expanded past the default cap.
       const [expanded, setExpanded] = useState({})
-      // 窄屏判定：用 matchMedia 而不是读一次 innerWidth，这样旋转屏幕或拖动窗口
-      // 改变宽度时能跟着变，而不是停在挂载那一刻的结论上。
+      // 宽度判定用 matchMedia 而不是读一次 innerWidth，旋转屏幕或改窗口大小时能跟着变。
       const [narrow, setNarrow] = useState(() => isNarrow())
-      // 列表是否展开。窄屏默认收起，先把对话让出来；桌面默认展开。
+      const [drawer, setDrawer] = useState(() => isDrawer())
+      // 列表是否展开。窄到该自动收起时默认收起，先把对话让出来。
       const [listOpen, setListOpen] = useState(() => !isNarrow())
 
       useEffect(() => {
         if (typeof window === 'undefined' || !window.matchMedia) return undefined
-        const mq = window.matchMedia('(max-width: 640px)')
-        const sync = () => setNarrow(mq.matches)
+        const mqNarrow = window.matchMedia(`(max-width: ${SIDEBAR_AUTO_COLLAPSE - 1}px)`)
+        const mqDrawer = window.matchMedia(`(max-width: ${DRAWER_MAX - 1}px)`)
+        const sync = () => {
+          setNarrow(mqNarrow.matches)
+          setDrawer(mqDrawer.matches)
+        }
         sync()
         // Safari 老版本只有 addListener，两个都挂上，缺哪个用另一个。
-        if (mq.addEventListener) {
-          mq.addEventListener('change', sync)
-          return () => mq.removeEventListener('change', sync)
+        const on = (mq) => {
+          if (mq.addEventListener) {
+            mq.addEventListener('change', sync)
+            return () => mq.removeEventListener('change', sync)
+          }
+          mq.addListener(sync)
+          return () => mq.removeListener(sync)
         }
-        mq.addListener(sync)
-        return () => mq.removeListener(sync)
+        const offNarrow = on(mqNarrow)
+        const offDrawer = on(mqDrawer)
+        return () => {
+          offNarrow()
+          offDrawer()
+        }
       }, [])
       const [detail, setDetail] = useState(null)
       const [detailError, setDetailError] = useState(null)
@@ -1387,16 +1436,7 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: 'cxm-page' },
-        // 窄屏上列表是覆盖层，需要一层遮罩来承接「点空白处关闭」。
-        listOpen && narrow
-          ? h('button', {
-              type: 'button',
-              className: 'cxm-scrim',
-              'aria-label': t('list.hide'),
-              onClick: () => setListOpen(false),
-            })
-          : null,
+        { className: 'cxm-page', 'data-drawer': drawer ? 'true' : 'false' },
         h(
           'div',
           { className: 'cxm-list-pane', 'data-open': listOpen ? 'true' : 'false' },
@@ -1432,6 +1472,15 @@ window.__ModuleLoader__.load({
           ),
           h('div', { className: 'cxm-list-body' }, listBody()),
         ),
+        // 遮罩紧跟列表，靠 CSS 兄弟选择器跟着列表开合，不用第二份状态。
+        // 只有抽屉态才需要它；宽屏下它是 pointer-events:none，点不到。
+        h('button', {
+          type: 'button',
+          className: 'cxm-drawer-mask',
+          tabIndex: -1,
+          'aria-hidden': 'true',
+          onClick: () => setListOpen(false),
+        }),
         selected
           ? h(Conversation, {
               t,

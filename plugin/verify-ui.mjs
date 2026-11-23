@@ -249,6 +249,7 @@ const texts = []
 const classes = []
 const clickables = []
 let listOpenAttr = null
+let drawerAttr = null
 function walk(node, at) {
   if (node === null || node === undefined || node === false) return
   if (Array.isArray(node)) { node.forEach((n, i) => walk(n, `${at}/${i}`)); return }
@@ -282,6 +283,9 @@ function walk(node, at) {
   if (typeof cls === 'string' && cls.includes('cxm-list-pane')) {
     listOpenAttr = node.props['data-open']
   }
+  if (typeof cls === 'string' && cls.includes('cxm-page')) {
+    drawerAttr = node.props['data-drawer']
+  }
   if (typeof node.type === 'string' && node.type === 'button' && typeof node.props?.onClick === 'function') {
     clickables.push({ cls: cls || '', label: node.props['aria-label'] || node.props.title || '', onClick: node.props.onClick })
   }
@@ -298,6 +302,7 @@ function renderOnce() {
   classes.length = 0
   clickables.length = 0
   listOpenAttr = null
+  drawerAttr = null
   path = ''
   const page = regs.find((r) => r.o.name === 'main')
   walk(React.createElement(page.c), '')
@@ -326,6 +331,8 @@ console.log('--- visible text ---')
 texts.forEach((t) => console.log(' ', t))
 console.log('\n--- checks ---')
 const joined = texts.join(' | ')
+// 桌面渲染后立刻记下，免得后面的窄屏测试改掉全局状态。
+const desktopDrawerAttr = drawerAttr
 const checks = [
   ['styles injected into document.head (badge survives unmount)',
     headChildren.some((el) => el['data-plugin-css'] === 'codex-monitor' && el.textContent.includes('.cxm-page'))],
@@ -356,6 +363,8 @@ const checks = [
   // 窄屏：列表默认收起（先让出对话），展开时压一层遮罩承接点击关闭。
   ['narrow defaults the list closed', narrow_defaults_closed()],
   ['narrow drawer renders a scrim', narrow_drawer_has_scrim()],
+  ['narrow page is marked as drawer', narrow_marks_drawer()],
+  ['desktop is not a drawer', desktopDrawerAttr === 'false'],
 ]
 // ── list collapse ─────────────────────────────────────────────────────────────
 function toggle_hides_list() {
@@ -373,11 +382,16 @@ function toggle_hides_list() {
 function withNarrow(fn) {
   const saved = globalThis.window?.matchMedia
   globalThis.window = globalThis.window || {}
-  globalThis.window.matchMedia = (q) => ({
-    matches: q.includes('640'),
-    addEventListener() {}, removeEventListener() {},
-    addListener() {}, removeListener() {},
-  })
+  // 桩要回答 DSH 的两个阈值：1023（自动收起）和 767（抽屉）。
+  globalThis.window.matchMedia = (q) => {
+    const m = q.match(/max-width:\s*(\d+)px/)
+    const max = m ? Number(m[1]) : Infinity
+    return {
+      matches: 375 <= max,
+      addEventListener() {}, removeEventListener() {},
+      addListener() {}, removeListener() {},
+    }
+  }
   // 清空 hook 槽位才算真正重挂：否则 useState 会复用上一次的 narrow=false。
   hookSlots.clear()
   try {
@@ -414,7 +428,14 @@ function narrow_drawer_has_scrim() {
     // 点击与随后这次渲染都必须在桩生效期间完成，否则 isNarrow() 又回到 false。
     toggle.onClick()
     renderOnce()
-    return listOpenAttr === 'true' && classes.some((c) => c.includes('cxm-scrim'))
+    return listOpenAttr === 'true' && classes.some((c) => c.includes('cxm-drawer-mask'))
+  })
+}
+
+function narrow_marks_drawer() {
+  return withNarrow(() => {
+    remountAndRender()
+    return drawerAttr === 'true'
   })
 }
 

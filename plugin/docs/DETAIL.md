@@ -21,10 +21,15 @@ Codex 桌面版在后台跑任务时，你看不到它在做什么，也不知�
    - 点项目标题可以整组折叠；单个项目会话很多时，默认只显示最紧急的 5 个，
      点「展开显示 N 个」看全部（比如 `base-ui-component-lib` 可能有 20 多个）。
    - **会话列表可以整个收起**：对话窗口左上角的两栏小图标是开关，收起后对话区占满全宽。
-     窄屏（≤640px）打开时列表默认就是收起的，先把对话让出来；此时列表以覆盖层形式
-     从左侧滑出，点右侧空白处的遮罩即可关掉，选中会话后也会自动收起。
-     判断用 `matchMedia` 而不是读一次宽度，所以旋转屏幕或改窗口大小时会跟着变。
-     触屏设备上行高从 32px 抬到 40px，便于点击。
+     窄屏适配照抄 DSH 左侧栏（`dsh-client-ui-layout`）的做法，不自己另定一套：
+     视口 < **1024px** 自动收起侧栏（`SIDEBAR_AUTO_COLLAPSE`），视口 < **768px**
+     改成抽屉覆盖（`drawer = viewport < 768`）。抽屉宽度 `min(280px, 视口 - 48px)`，
+     用 `translate(-100%)` 滑出而不是 `display:none`（否则没有过渡），遮罩用
+     `--dsw-alias-bg-mask-1` + `--dsw-mask-blur`，过渡用
+     `var(--ds-transition-duration-slow) var(--ds-ease-in-out)`。
+     判断用 `matchMedia` 的 change 事件而不是读一次宽度，所以旋转屏幕或改窗口大小
+     会跟着变。触屏（`pointer:coarse`）下只把输入框字号提到 16px，避免 iOS 聚焦时
+     页面被放大——DSH 也只做这一件事，行高它没有改。
    - 项目名和会话名直接取 Codex 自己的字段，和它侧栏显示的一致：项目名来自
      `projects.name`（所以会出现「Bitable 组件库」这种自定义名，而不是目录名
      `base-ui-component-lib`），会话名来自 `threads.name`（「GridView 表格组件」）。
