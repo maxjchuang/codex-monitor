@@ -236,11 +236,13 @@ const agent1 = [
 const out = process.argv[2] ?? '/tmp/cxm-preview.png'
 // 变体：collapsed 看收起态，mobile 看窄屏覆盖式抽屉。默认是桌面展开态。
 const variant = process.argv[3] ?? 'default'
-const listOpen = variant === 'collapsed' || variant === 'mobile' || variant === 'drawer-closed' ? 'false' : 'true'
-const drawer = variant === 'mobile' || variant === 'drawer' || variant === 'drawer-closed' ? 'true' : 'false'
+// locked 可以单独用，也可以和 mobile 组合（locked-mobile），验证窄屏下的换行。
+const locked = variant.startsWith('locked')
+const listOpen = variant === 'collapsed' || variant.startsWith('mobile') || variant === 'drawer-closed' ? 'false' : 'true'
+const drawer = variant.startsWith('mobile') || variant === 'drawer' || variant === 'drawer-closed' ? 'true' : 'false'
 // Chrome headless 的 viewport 最小就是 500px，窗口设更小只会裁掉右边，
 // 截出来的图看着像溢出，其实页面本身没问题。
-const size = variant.startsWith('mobile') || variant.startsWith('drawer') ? '500,900' : '1200,760'
+const size = variant.startsWith('mobile') || variant.startsWith('drawer') || variant === 'locked-mobile' ? '500,900' : '1200,760'
 // 用真实截图当样例，免得预览里是个占位方块。
 // 预览用的样例图放在 docs/ 里，别引用本机临时目录（别人跑不起来）。
 const SHOT = (() => {
@@ -324,9 +326,10 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
         <button class="cxm-opt" disabled>删除这条临时记录</button>
         <button class="cxm-opt" disabled>保留测试记录</button>
       </div>
-      ${process.argv[3] === 'locked' ? '<div class="cxm-locked" role="status"><span class="cxm-locked-dot" aria-hidden="true"></span>Codex 正开着这个会话，暂时不能投递。在 Codex 里切到别的会话或关掉它，这里会自动恢复。</div>' : ''}
-        <div class="cxm-card"${process.argv[3] === 'locked' ? ' data-locked="true"' : ''}>
-        <textarea class="cxm-textarea"${process.argv[3] === 'locked' ? ' disabled' : ''} rows="1" placeholder="${process.argv[3] === 'locked' ? '会话被 Codex 占用，暂时无法发送' : '给这个 Codex 会话发消息…'}"></textarea>
+        <div class="cxm-card"${locked ? ' data-locked="true"' : ''}>
+        ${locked && variant !== 'locked-draft'
+          ? '<div class="cxm-locked" role="status"><span class="cxm-locked-dot" aria-hidden="true"></span>Codex 正开着这个会话，暂时不能投递。在 Codex 里切到别的会话或关掉它，这里会自动恢复。</div>'
+          : `<textarea class="cxm-textarea"${locked ? ' disabled' : ''} rows="1" placeholder="给这个 Codex 会话发消息…">${variant === 'locked-draft' ? '我已经打了一半的字，别弄丢' : ''}</textarea>`}
         <div class="cxm-dock">
           <button class="cxm-send" disabled aria-label="发送消息" title="发送消息"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z" fill="currentColor"/></svg></button>
         </div>

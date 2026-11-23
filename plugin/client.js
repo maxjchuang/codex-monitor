@@ -81,7 +81,6 @@ window.__ModuleLoader__.load({
       'reply.failed': '投递失败：{error}',
       'reply.busy': '这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。',
       'reply.locked': 'Codex 正开着这个会话，暂时不能投递。在 Codex 里切到别的会话或关掉它，这里会自动恢复。',
-      'reply.lockedPlaceholder': '会话被 Codex 占用，暂时无法发送',
       'chat.imageAlt': '用户附的图 {n}',
       'reply.note': '追加为新的一轮，不打断正在跑的任务。⌘↵ 发送。',
       'reply.options': 'Codex 给出的选项（点击填入，需你自己发送）：',
@@ -146,7 +145,6 @@ window.__ModuleLoader__.load({
       'reply.failed': 'Could not deliver: {error}',
       'reply.busy': 'Codex is holding this session open. Switch to another session in Codex, or close it, then send again.',
       'reply.locked': 'Codex has this session open, so it cannot take a message right now. Switch away from it or close it in Codex and this will clear on its own.',
-      'reply.lockedPlaceholder': 'Session is held by Codex; sending is unavailable',
       'chat.imageAlt': 'Attached image {n}',
       'reply.note': 'Appends a new turn; does not interrupt work already running. ⌘↵ sends.',
       'reply.options': 'Options Codex offered (click to fill in, you still send):',
@@ -491,10 +489,15 @@ window.__ModuleLoader__.load({
    内部纵向排「文本区 + 底部按钮行」。之前把按钮和 textarea 并排放在描边盒子里，
    和 DSH 的结构不一样。 */
 /* 锁定提示：一条安静的说明，不要做成报错的样子 —— 这不是错误。 */
-.cxm-locked{display:flex;align-items:center;gap:6px;box-sizing:border-box;
-  width:100%;max-width:min(100%,920px);margin:0 auto;padding:0 4px;
-  font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.cxm-locked-dot{flex:none;width:6px;height:6px;border-radius:999px;
+/* 锁住的提示占据输入框的位置：内边距和字号都照抄 .cxm-textarea，
+   这样提示文字和平时打字的起点完全对齐，切换时不会跳一下。 */
+.cxm-locked{display:flex;align-items:flex-start;gap:6px;box-sizing:border-box;
+  min-height:36px;padding:4px 8px 0 14px;
+  font-family:inherit;font-size:var(--dsh-content-font-size,14px);
+  line-height:calc(24px + var(--dsh-content-font-delta,0px));
+  color:var(--dsw-alias-label-secondary);cursor:not-allowed}
+/* 圆点要落在第一行文字的中间，不然会贴着顶边。 */
+.cxm-locked-dot{flex:none;width:6px;height:6px;border-radius:999px;margin-top:9px;
   background:var(--dsw-alias-state-warn-primary)}
 .cxm-composer[data-locked='true'] .cxm-textarea{opacity:.6;cursor:not-allowed}
 .cxm-composer[data-locked='true'] .cxm-send{opacity:.4;cursor:default}
@@ -1291,15 +1294,6 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'cxm-composer', 'data-locked': locked ? 'true' : 'false' },
-        // 锁着时先把原因说清楚，再让输入框变成不可用状态。
-        locked
-          ? h(
-              'div',
-              { className: 'cxm-locked', role: 'status' },
-              h('span', { className: 'cxm-locked-dot', 'aria-hidden': 'true' }),
-              t('reply.locked'),
-            )
-          : null,
         options.length > 0
           ? h(
               'div',
@@ -1328,11 +1322,21 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'cxm-card' },
-          h('textarea', {
+          // 锁着的时候输入框本来也用不了，把原因直接写进这个位置，
+          // 省掉上面多出来的一行。但如果里面已经有草稿，就仍然把输入框留着，
+          // 否则锁一下就把人家打了一半的字弄丢了。
+          locked && draft.length === 0
+            ? h(
+                'div',
+                { className: 'cxm-locked', role: 'status' },
+                h('span', { className: 'cxm-locked-dot', 'aria-hidden': 'true' }),
+                t('reply.locked'),
+              )
+            : h('textarea', {
             className: 'cxm-textarea',
             rows: 1,   // 空时只占一行，和 DSH 的 min-height:36px 对应；不写会默认 2 行
             value: draft,
-            placeholder: locked ? t('reply.lockedPlaceholder') : t('reply.placeholder'),
+            placeholder: t('reply.placeholder'),
             'aria-label': t('reply.placeholder'),
             disabled: locked,
             'aria-disabled': locked ? 'true' : undefined,
