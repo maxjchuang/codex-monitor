@@ -1105,13 +1105,62 @@ def is_writer_busy(exc):
 
 
 def push_turn(srv, thread_id, message):
-    """resume 之后投一轮。srv 必须是新进程，否则 resume 会撞上自己的锁。"""
+    """resume 之后投一轮。srv 必须是新进程，否则 resume 会撞上自己的锁。
+
+    注意：调用方不能让 srv 在轮次结束前退出。app-server 一退出，Codex 就把在飞的
+    轮次记成 interrupted，任务实际没跑（实测 durationMs 只有 61ms）。投递请用
+    deliver_and_release()，它会等这一轮跑完再关进程。
+    """
     srv.call("thread/resume", {"threadId": thread_id})
     return srv.call(
         "turn/start",
         {"threadId": thread_id, "input": [
             {"type": "text", "text": message, "text_elements": []}]},
     )
+
+
+# 投递之后必须让 app-server 活到轮次结束。它一退出，Codex 就把在飞的轮次
+# 记成 interrupted，任务实际没跑——实测 durationMs 只有 61ms。
+# 但也不能让它一直活着：resume 会把会话锁挂在这个进程上，直到进程退出才放，
+# 那样 Codex 桌面端就再也拿不到这个会话了。
+# 所以投递走后台线程，等这一轮跑完再关。
+DELIVER_TURN_TIMEOUT = 1800
+
+
+def deliver_and_release(thread_id, message, timeout=DELIVER_TURN_TIMEOUT):
+    """投递一轮，等它跑完，再放掉会话锁。
+
+    返回 {"delivered": bool, "status": str, "error": str|None}。
+    """
+    srv = AppServer()
+    try:
+        push_turn(srv, thread_id, message)
+        params = srv.wait_notification("turn/completed", timeout)
+        if not params:
+            # 没等到结束通知不代表没投递，任务可能还在跑，只是超过了等待上限。
+            return {"delivered": True, "status": "running", "error": None}
+        turn = params.get("turn") or {}
+        return {"delivered": True, "status": turn.get("status"), "error": None}
+    except Exception as exc:
+        return {"delivered": False, "status": "failed", "error": str(exc)}
+    finally:
+        srv.close()
+
+
+def deliver_async(thread_id, message, on_done=None):
+    """把投递丢到后台，HTTP 立刻返回，任务继续跑。"""
+
+    def run():
+        result = deliver_and_release(thread_id, message)
+        if on_done is not None:
+            try:
+                on_done(result)
+            except Exception:
+                pass
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
 
 
 def deliver(thread_id, message, wait_sec, resume=True, srv=None, quiet=False):
@@ -1331,10 +1380,11 @@ def queue_drain(verbose=False):
         if thread_locked(tid):
             waiting.append(entry_id)
             continue
-        srv = None
         try:
-            srv = AppServer()
-            push_turn(srv, tid, msg)
+            # 队列里的消息同样要等轮次跑完再放锁，不能投完就关进程。
+            result = deliver_and_release(tid, msg)
+            if not result["delivered"]:
+                raise RuntimeError(result.get("error") or "投递失败")
             queue_remove(entry_id)
             delivered.append(entry_id)
             if verbose:
@@ -1354,9 +1404,6 @@ def queue_drain(verbose=False):
                 failed.append(entry_id)
                 if verbose:
                     print(f"❌ 队列投递失败 {tid}: {str(exc)[:80]}", flush=True)
-        finally:
-            if srv is not None:
-                srv.close()
     return {"delivered": delivered, "waiting": waiting, "failed": failed}
 
 
@@ -1677,18 +1724,16 @@ def serve(port=0, host="127.0.0.1"):
                 if not tid or not msg:
                     self._json({"ok": False, "error": "threadId and message required"}, 400)
                     return
-                # 投递要 resume，而 resume 会把这个 thread 的写入锁挂到进程上，
-                # 直到进程退出才放。所以投递不能借用常驻连接：借了它就一直占着
-                # 这个会话，之后的投递（包括 Codex 桌面端自己）全会被
-                # "already has an active writer" 挡住。
-                # 这里开一个一次性连接，投完立刻关掉，锁跟着释放。
+                # 投递要 resume，而 resume 会把会话锁挂到进程上，直到进程退出才放。
+                # 所以「投完立刻关」会把正在跑的轮次杀掉（实测 durationMs 只有 61ms，
+                # 之后状态一直是 interrupted），而「一直不关」又会让 Codex 桌面端
+                # 再也拿不到这个会话。折中是后台投递：等这一轮跑完再关进程。
+                # 先在请求线程里探一次锁，好在被占着时能当场回 202 而不是假装投递成功。
                 try:
-                    srv = AppServer()
-                    try:
-                        push_turn(srv, tid, msg)
-                    finally:
-                        srv.close()
-                    self._json({"ok": True, "delivered": True})
+                    if thread_locked(tid):
+                        raise RuntimeError(WRITER_BUSY)
+                    deliver_async(tid, msg)
+                    self._json({"ok": True, "delivered": True, "async": True})
                 except Exception as exc:
                     if is_writer_busy(exc):
                         # 锁着时不丢消息：排进队列，等锁释放自动投。

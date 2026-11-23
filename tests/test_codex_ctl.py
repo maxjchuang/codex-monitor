@@ -8,6 +8,8 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import fcntl
 import json
 import unittest
@@ -608,6 +610,80 @@ class TestQueue(TempDbs):
         self.assertTrue(c.is_permanent_error(RuntimeError("no rollout found")))
         self.assertFalse(c.is_permanent_error(RuntimeError("connection reset")))
         self.assertFalse(c.is_permanent_error(RuntimeError(c.WRITER_BUSY)))
+
+
+class TestDeliveryKeepsProcessAlive(TempDbs):
+    """投递之后 app-server 必须活到轮次结束。
+
+    这是真出过的事故：投完立刻 close()，Codex 就把在飞的轮次记成 interrupted，
+    实测 durationMs 只有 61ms，任务实际上没执行，用户看到的是「发了但没动静」。
+    """
+
+    def _fake_srv(self, completed=True):
+        srv = mock.MagicMock()
+        srv.wait_notification.return_value = (
+            {"turn": {"status": "completed"}} if completed else None
+        )
+        return srv
+
+    def test_waits_for_the_turn_before_closing(self):
+        srv = self._fake_srv()
+        with mock.patch.object(c, "AppServer", return_value=srv):
+            result = c.deliver_and_release("t1", "hello")
+        srv.wait_notification.assert_called_once()
+        srv.close.assert_called_once()
+        self.assertTrue(result["delivered"])
+        self.assertEqual(result["status"], "completed")
+
+    def test_close_happens_even_if_the_turn_fails(self):
+        srv = mock.MagicMock()
+        srv.call.side_effect = [None, RuntimeError("boom")]
+        with mock.patch.object(c, "AppServer", return_value=srv):
+            result = c.deliver_and_release("t1", "hello")
+        srv.close.assert_called_once()
+        self.assertFalse(result["delivered"])
+        self.assertIn("boom", result["error"])
+
+    def test_a_timeout_still_counts_as_delivered(self):
+        """等不到完成通知不代表没投出去，可能只是跑得久。"""
+        srv = self._fake_srv(completed=False)
+        with mock.patch.object(c, "AppServer", return_value=srv):
+            result = c.deliver_and_release("t1", "hello")
+        self.assertTrue(result["delivered"])
+        self.assertEqual(result["status"], "running")
+
+    def test_async_delivery_does_not_block_the_caller(self):
+        """HTTP 层要立刻返回，否则用户点完发送界面会卡住。"""
+        started, release = [], threading.Event()
+
+        def slow(*a, **k):
+            started.append(True)
+            release.wait(5)
+            return {"delivered": True, "status": "completed", "error": None}
+
+        with mock.patch.object(c, "deliver_and_release", side_effect=slow):
+            t0 = time.time()
+            c.deliver_async("t1", "hello")
+            elapsed = time.time() - t0
+        self.assertLess(elapsed, 1.0, "投递不能阻塞调用方")
+        release.set()
+        for _ in range(50):
+            if started:
+                break
+            time.sleep(0.02)
+        self.assertTrue(started)
+
+    def test_async_reports_the_result_to_the_callback(self):
+        done = threading.Event()
+        seen = {}
+
+        def fake(*a, **k):
+            return {"delivered": True, "status": "completed", "error": None}
+
+        with mock.patch.object(c, "deliver_and_release", side_effect=fake):
+            c.deliver_async("t1", "hi", on_done=lambda r: (seen.update(r), done.set()))
+        self.assertTrue(done.wait(5))
+        self.assertEqual(seen["status"], "completed")
 
 
 class TestImages(TempDbs):
