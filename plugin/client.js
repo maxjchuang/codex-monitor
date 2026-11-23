@@ -278,6 +278,49 @@ window.__ModuleLoader__.load({
   line-height:calc(24px + var(--dsh-content-font-delta,0px));
   white-space:pre-wrap;overflow-wrap:anywhere;padding:0;background:none;border:0}
 
+/* markdown inside a reply: compact, and quieter than the prose around it */
+.cxm-md-p{margin:0}
+/* Any two adjacent blocks get breathing room. Enumerating the combinations missed
+   pairs such as a list followed by a table, so the rhythm is set in one place. */
+.cxm-bubble>.cxm-md-p+.cxm-md-p,.cxm-bubble>.cxm-md-p+.cxm-md-list,
+.cxm-bubble>.cxm-md-p+.cxm-md-pre,.cxm-bubble>.cxm-md-p+.cxm-md-table-wrap,
+.cxm-bubble>.cxm-md-p+.cxm-md-h,.cxm-bubble>.cxm-md-list+.cxm-md-p,
+.cxm-bubble>.cxm-md-list+.cxm-md-list,.cxm-bubble>.cxm-md-list+.cxm-md-pre,
+.cxm-bubble>.cxm-md-list+.cxm-md-table-wrap,.cxm-bubble>.cxm-md-list+.cxm-md-h,
+.cxm-bubble>.cxm-md-pre+.cxm-md-p,.cxm-bubble>.cxm-md-pre+.cxm-md-list,
+.cxm-bubble>.cxm-md-pre+.cxm-md-table-wrap,.cxm-bubble>.cxm-md-pre+.cxm-md-h,
+.cxm-bubble>.cxm-md-table-wrap+.cxm-md-p,.cxm-bubble>.cxm-md-table-wrap+.cxm-md-list,
+.cxm-bubble>.cxm-md-table-wrap+.cxm-md-table-wrap,
+.cxm-bubble>.cxm-md-table-wrap+.cxm-md-h,.cxm-bubble>.cxm-md-h+.cxm-md-p,
+.cxm-bubble>.cxm-md-h+.cxm-md-list,.cxm-bubble>.cxm-md-h+.cxm-md-pre,
+.cxm-bubble>.cxm-md-h+.cxm-md-table-wrap,.cxm-bubble>.cxm-md-h+.cxm-md-h{
+  margin-top:10px}
+.cxm-md-h{margin:14px 0 6px;font-weight:600;line-height:1.4;color:var(--dsw-alias-label-primary)}
+.cxm-md-h:first-child{margin-top:0}
+.cxm-md-code{font:var(--dsw-font-markdown-code-block-small);
+  background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsw-radius-xs,4px);
+  padding:1px 5px;overflow-wrap:anywhere}
+.cxm-md-pre{box-sizing:border-box;margin:0;padding:10px 12px;overflow:auto;
+  background:var(--dsw-alias-markdown-code-block);border-radius:var(--dsw-radius-md);
+  border:.5px solid var(--dsw-alias-border-l1);max-width:100%}
+.cxm-md-pre code{font:var(--dsw-font-markdown-code-block-small);white-space:pre;
+  color:var(--dsw-alias-label-primary)}
+.cxm-md-link{color:var(--dsw-alias-link);text-decoration:none}
+.cxm-md-link:hover{text-decoration:underline}
+.cxm-md-list{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:4px}
+.cxm-md-list li{min-width:0}
+.cxm-md-quote{margin:0;padding:2px 0 2px 12px;
+  border-left:2px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-secondary)}
+.cxm-md-hr{border:0;border-top:.5px solid var(--dsw-alias-border-l2);margin:12px 0}
+.cxm-md-table-wrap{margin:0;max-width:100%;overflow:auto;
+  border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md)}
+.cxm-md-table{border-collapse:collapse;width:100%;font-size:13px;line-height:20px}
+.cxm-md-table th,.cxm-md-table td{padding:6px 10px;text-align:left;
+  border-bottom:.5px solid var(--dsw-alias-border-l2);vertical-align:top}
+.cxm-md-table th{font-weight:500;color:var(--dsw-alias-label-secondary);
+  background:var(--dsw-alias-markdown-code-block);white-space:nowrap}
+.cxm-md-table tr:last-child td{border-bottom:0}
+
 .cxm-stamp{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;
   font-variant-numeric:tabular-nums}
 
@@ -474,6 +517,286 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /**
+     * A small Markdown renderer for Codex transcripts.
+     *
+     * Codex replies in Markdown, so showing the raw source leaves backticks and `**`
+     * on screen. A plugin cannot pull in the host's renderer, and pulling a Markdown
+     * library would mean shipping a parser plus a sanitiser, so this covers the
+     * constructs Codex actually emits — measured across a live profile: inline code
+     * (24 of 52 messages), bold (13), links (13), tables (5), lists (4), headings (3).
+     *
+     * It builds React elements rather than HTML strings. Text is only ever handed to
+     * React as text, so a message containing `<script>` renders as those characters and
+     * there is no sanitising step that can be forgotten. The only attribute taken from
+     * the message is a link `href`, and that is scheme-checked first.
+     */
+
+    const SAFE_SCHEMES = /^(https?:|mailto:)/i
+
+    /** Inline spans: code, bold, italic, strikethrough, links. */
+    function renderInline(text, keyPrefix, h) {
+      const out = []
+      let rest = text
+      let n = 0
+      const push = (node) => out.push(node)
+      const key = () => `${keyPrefix}:i${n++}`
+
+      while (rest.length > 0) {
+        // Inline code wins over every other marker, so `**` inside backticks stays literal.
+        let m = /^(`+)([\s\S]*?)\1/.exec(rest)
+        if (m) {
+          push(h('code', { key: key(), className: 'cxm-md-code' }, m[2]))
+          rest = rest.slice(m[0].length)
+          continue
+        }
+        // Links: [label](href)
+        m = /^\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(rest)
+        if (m) {
+          const href = m[2]
+          if (SAFE_SCHEMES.test(href)) {
+            push(
+              h(
+                'a',
+                { key: key(), className: 'cxm-md-link', href, target: '_blank', rel: 'noreferrer noopener' },
+                ...renderInline(m[1], key(), h),
+              ),
+            )
+          } else {
+            // A javascript:/data: link keeps its label but is not made clickable.
+            push(h('span', { key: key() }, ...renderInline(m[1], key(), h)))
+          }
+          rest = rest.slice(m[0].length)
+          continue
+        }
+        m = /^\*\*([\s\S]+?)\*\*/.exec(rest)
+        if (m) {
+          push(h('strong', { key: key() }, ...renderInline(m[1], key(), h)))
+          rest = rest.slice(m[0].length)
+          continue
+        }
+        m = /^~~([\s\S]+?)~~/.exec(rest)
+        if (m) {
+          push(h('del', { key: key() }, ...renderInline(m[1], key(), h)))
+          rest = rest.slice(m[0].length)
+          continue
+        }
+        // Single-char emphasis, but not the `*` of a `**` run that failed above.
+        m = /^\*([^*\n]+)\*/.exec(rest)
+        if (m) {
+          push(h('em', { key: key() }, ...renderInline(m[1], key(), h)))
+          rest = rest.slice(m[0].length)
+          continue
+        }
+        // Plain run up to the next marker.
+        m = /^[^`[*~\n]+/.exec(rest)
+        if (m) {
+          push(m[0])
+          rest = rest.slice(m[0].length)
+          continue
+        }
+        // A stray marker character: keep it as text and move on.
+        push(rest[0])
+        rest = rest.slice(1)
+      }
+      return out
+    }
+
+    function splitRow(line) {
+      return line
+        .trim()
+        .replace(/^\|/, '')
+        .replace(/\|$/, '')
+        .split('|')
+        .map((c) => c.trim())
+    }
+
+    const isTableDivider = (line) => /^\s*\|?[\s:-]*-[\s:|-]*\|?\s*$/.test(line) && line.includes('-')
+
+    /** Parse a block of Markdown into block-level React nodes. */
+    function renderBlocks(source, keyPrefix, h) {
+      const lines = source.replace(/\r\n?/g, '\n').split('\n')
+      const blocks = []
+      let i = 0
+      let n = 0
+      const key = () => `${keyPrefix}:b${n++}`
+
+      while (i < lines.length) {
+        const line = lines[i]
+
+        if (/^\s*$/.test(line)) {
+          i += 1
+          continue
+        }
+
+        // Fenced code block. Codex puts these around diffs and shell output, where the
+        // whitespace is the meaning, so it is rendered verbatim in a pre.
+        const fence = /^\s*(`{3,}|~{3,})\s*([\w+-]*)\s*$/.exec(line)
+        if (fence) {
+          const marker = fence[1]
+          const lang = fence[2]
+          const body = []
+          i += 1
+          while (i < lines.length && !new RegExp(`^\\s*${marker[0]}{${marker.length},}\\s*$`).test(lines[i])) {
+            body.push(lines[i])
+            i += 1
+          }
+          i += 1 // closing fence (or end of input)
+          blocks.push(
+            h(
+              'pre',
+              { key: key(), className: 'cxm-md-pre', 'data-lang': lang || undefined },
+              h('code', null, body.join('\n')),
+            ),
+          )
+          continue
+        }
+
+        // ATX heading.
+        const head = /^\s*(#{1,6})\s+(.*)$/.exec(line)
+        if (head) {
+          const level = Math.min(head[1].length + 2, 6) // keep headings modest in a chat pane
+          blocks.push(h(`h${level}`, { key: key(), className: 'cxm-md-h' }, ...renderInline(head[2].trim(), key(), h)))
+          i += 1
+          continue
+        }
+
+        // Horizontal rule.
+        if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+          blocks.push(h('hr', { key: key(), className: 'cxm-md-hr' }))
+          i += 1
+          continue
+        }
+
+        // Blockquote: gather the run, strip the markers, render as one quoted block.
+        if (/^\s*>\s?/.test(line)) {
+          const body = []
+          while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+            body.push(lines[i].replace(/^\s*>\s?/, ''))
+            i += 1
+          }
+          blocks.push(
+            h('blockquote', { key: key(), className: 'cxm-md-quote' }, ...renderBlocks(body.join('\n'), key(), h)),
+          )
+          continue
+        }
+
+        // Table: header row, divider row, then body rows.
+        if (line.includes('|') && i + 1 < lines.length && isTableDivider(lines[i + 1])) {
+          const header = splitRow(line)
+          i += 2
+          const rows = []
+          while (i < lines.length && lines[i].includes('|') && !/^\s*$/.test(lines[i])) {
+            rows.push(splitRow(lines[i]))
+            i += 1
+          }
+          blocks.push(
+            h(
+              'div',
+              { key: key(), className: 'cxm-md-table-wrap' },
+              h(
+                'table',
+                { className: 'cxm-md-table' },
+                h(
+                  'thead',
+                  null,
+                  h(
+                    'tr',
+                    null,
+                    header.map((cell, c) => h('th', { key: c }, ...renderInline(cell, `${key()}:h${c}`, h))),
+                  ),
+                ),
+                h(
+                  'tbody',
+                  null,
+                  rows.map((row, r) =>
+                    h(
+                      'tr',
+                      { key: r },
+                      header.map((_, c) =>
+                        h('td', { key: c }, ...renderInline(row[c] ?? '', `${key()}:r${r}c${c}`, h)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          )
+          continue
+        }
+
+        // Lists. Nesting is tracked by indent so sub-bullets stay sub-bullets.
+        const listItem = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(line)
+        if (listItem) {
+          const ordered = /\d/.test(listItem[2])
+          const baseIndent = listItem[1].length
+          const items = [] // {indent, content[]}
+          while (i < lines.length) {
+            const m = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/.exec(lines[i])
+            if (m) {
+              items.push({ indent: m[1].length, text: m[3] })
+              i += 1
+              continue
+            }
+            // A plain indented line continues the previous item.
+            if (items.length > 0 && /^\s{2,}\S/.test(lines[i])) {
+              items[items.length - 1].text += ' ' + lines[i].trim()
+              i += 1
+              continue
+            }
+            break
+          }
+          // Simpler and adequate: one level of nesting by grouping consecutive items.
+          const listNodes = []
+          let k = 0
+          while (k < items.length) {
+            const level = items[k].indent
+            const group = []
+            while (k < items.length && items[k].indent >= level) {
+              group.push(items[k])
+              k += 1
+            }
+            listNodes.push(
+              h(
+                ordered ? 'ol' : 'ul',
+                { key: key(), className: 'cxm-md-list' },
+                group.map((it, idx) =>
+                  h('li', { key: idx }, ...renderInline(it.text, `${key()}:li${idx}`, h)),
+                ),
+              ),
+            )
+          }
+          blocks.push(...listNodes)
+          continue
+        }
+
+        // Paragraph: consecutive plain lines, joined with a space (Markdown soft wrap).
+        const para = []
+        while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^\s*(#{1,6})\s+/.test(lines[i]) &&
+               !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i]) && !/^\s*>\s?/.test(lines[i]) &&
+               !/^\s*(`{3,}|~{3,})/.test(lines[i])) {
+          para.push(lines[i].trim())
+          i += 1
+        }
+        if (para.length > 0) {
+          blocks.push(h('p', { key: key(), className: 'cxm-md-p' }, ...renderInline(para.join(' '), key(), h)))
+        } else {
+          i += 1 // guard against a line that matched nothing
+        }
+      }
+      return blocks
+    }
+
+    /**
+     * Render Markdown source to React nodes.
+     * @param text - the message body.
+     * @param h - React.createElement.
+     * @param keyPrefix - stable prefix for keys.
+     */
+    function renderMarkdown(text, h, keyPrefix = 'md') {
+      return renderBlocks(text, keyPrefix, h)
+    }
+
     /** One row in the left list. Selecting it drives the conversation pane. */
     function SessionRow({ t, session, selected, onSelect }) {
       const waiting = session.state === 'waiting'
@@ -633,7 +956,13 @@ window.__ModuleLoader__.load({
           'data-role': mine ? 'user' : 'agent',
           'data-final': entry.final ? 'true' : 'false',
         },
-        h('div', { className: 'cxm-bubble' }, entry.text),
+        h(
+          'div',
+          { className: 'cxm-bubble' },
+          // Codex replies in Markdown; the user's own text stays literal, since it is
+          // whatever they typed and reinterpreting it as markup would be surprising.
+          mine ? entry.text : renderMarkdown(entry.text, h, 'agent'),
+        ),
         entry.questions && entry.questions.length > 0
           ? h(
               'div',

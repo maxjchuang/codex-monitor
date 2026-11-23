@@ -15,6 +15,35 @@ import { execFileSync } from 'node:child_process'
 const source = readFileSync(new URL('./client.js', import.meta.url), 'utf8')
 const css = source.match(/const CSS = `([\s\S]*?)`\n/)[1]
 
+// Reuse the renderer from client.js rather than reimplementing it here, so the
+// preview cannot drift from what the app actually renders.
+const mdLines = source.split('\n')
+const mdStart = mdLines.findIndex((l) => l.includes('A small Markdown renderer for Codex transcripts')) - 1
+const mdFn = mdLines.findIndex((l) => l.includes('function renderMarkdown(text, h, keyPrefix'))
+const mdEnd = mdLines.findIndex((l, i) => i > mdFn && l.trim() === '}')
+const mdBlock = mdLines.slice(mdStart, mdEnd + 1).join('\n').replace(/^ {4}/gm, '')
+const nodeH = (type, props, ...children) => ({ type, props: props ?? {}, children: children.filter((c) => c != null) })
+const renderMarkdown = new Function('h', `${mdBlock}\n;return renderMarkdown;`)(nodeH)
+
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/** Render Markdown to an HTML string for the static preview. */
+function mdToHtml(text) {
+  const toHtml = (node) => {
+    if (node == null) return ''
+    if (typeof node === 'string') return esc(node)
+    if (Array.isArray(node)) return node.map(toHtml).join('')
+    const inner = (node.children ?? []).map(toHtml).join('')
+    const t = node.type
+    const cls = node.props?.className ? ` class="${node.props.className}"` : ''
+    if (t === 'a') return `<a${cls} href="${esc(node.props.href)}">${inner}</a>`
+    if (t === 'pre') return `<pre${cls}><code>${inner}</code></pre>`
+    if (t === 'div') return `<div${cls}>${inner}</div>`
+    return `<${t}${cls}>${inner}</${t}>`
+  }
+  return (renderMarkdown(text, nodeH) ?? []).map(toHtml).join('')
+}
+
 // Light-theme values, copied from dsh-client-ui-theme so the preview is faithful.
 const light = {
   '--dsw-alias-bg-base': '#ffffff',
@@ -26,6 +55,9 @@ const light = {
   '--dsw-alias-border-l2': '#0000001a',
   '--dsw-alias-border-l3': '#0000001f',
   '--dsw-alias-markdown-code-block': '#f7f8fa',
+  '--dsw-alias-link': '#2563eb',
+  '--dsw-radius-xs': '4px',
+  '--dsw-radius-md': '12px',
   '--dsw-alias-markdown-placeholder': '#a6acb5',
   '--dsw-alias-brand-primary': '#1b1c1f',
   '--dsw-specific-bubble': '#eef3ff',
@@ -114,6 +146,24 @@ const rows = groups
   })
   .join('')
 
+// Real shapes Codex emits: inline code, bold, links, a list, and a table.
+const agent1 = [
+  '找到了：暗色下默认态的边框用的是 `border-l2` 这个边框色，在深色背景上几乎看不见；悬停态则错误地复用了默认态。',
+  '',
+  '改动如下：',
+  '',
+  '- `--gridview-border`: `border-l2` → `border-l3`',
+  '- 悬停态单独用 **`border-l4`**，不再复用默认态',
+  '- 顺带修掉 `hover` 影响相邻元素的问题',
+  '',
+  '| 场景 | 旧值 | 新值 |',
+  '| --- | --- | --- |',
+  '| 默认态 | border-l2 | border-l3 |',
+  '| 悬停态 | border-l2 | border-l4 |',
+  '',
+  '改完可以看 [Storybook 对照页](http://127.0.0.1:6211/grid-review/sheet-1.html)。',
+].join('\n')
+
 const html = `<!doctype html><meta charset="utf-8"><style>
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;font-family:-apple-system,"PingFang SC",system-ui,sans-serif}
@@ -153,7 +203,7 @@ body{background:var(--dsw-alias-bg-base)}
         <div class="cxm-action"><b>执行命令</b><span class="cxm-cmd">/bin/zsh -lc 'rg -n "GridView" src'</span></div>
         <div class="cxm-action"><b>执行命令</b><span class="cxm-cmd">npm test</span><span class="cxm-run">共 63 步</span></div>
         <div class="cxm-msg" data-role="agent">
-          <div class="cxm-bubble">找到了：暗色下默认态的边框用的是 border-l2 这个边框色，在深色背景上几乎看不见；悬停态则错误地复用了默认态。</div>
+          <div class="cxm-bubble">${mdToHtml(agent1)}</div>
         </div>
         <div class="cxm-msg" data-role="user">
           <div class="cxm-bubble">删掉吧，保留正式记录就行。</div>
