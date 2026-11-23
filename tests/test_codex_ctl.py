@@ -38,8 +38,12 @@ class TempDbs(unittest.TestCase):
         conn = sqlite3.connect(state)
         conn.execute(
             "create table threads (id text, title text, cwd text, updated_at integer, "
-            "model text, tokens_used integer, rollout_path text)"
+            "model text, tokens_used integer, rollout_path text, name text, "
+            "is_pinned integer, source text, thread_source text, preview text)"
         )
+        # Codex 侧栏的项目名来自 projects.name，一个项目可以挂多个根目录。
+        conn.execute("create table projects (id text, name text, position integer)")
+        conn.execute("create table project_roots (project_id text, path text)")
         conn.commit()
         conn.close()
 
@@ -175,11 +179,65 @@ class TestParsing(TempDbs):
 class TestThreads(TempDbs):
     def test_latest_threads_sorted_by_update(self):
         conn = sqlite3.connect(c.STATE_DB)
-        conn.execute("insert into threads values ('a','old','/p',1,'m',0,'')")
-        conn.execute("insert into threads values ('b','new','/p',2,'m',0,'')")
+        conn.execute("insert into threads (id,title,cwd,updated_at) values ('a','old','/p',1)")
+        conn.execute("insert into threads (id,title,cwd,updated_at) values ('b','new','/p',2)")
         conn.commit()
         conn.close()
         self.assertEqual([t["id"] for t in c.latest_threads(5)], ["b", "a"])
+
+    def test_name_beats_raw_title(self):
+        """threads.name 是 Codex 显示的会话名，优先于原始首条消息。"""
+        conn = sqlite3.connect(c.STATE_DB)
+        conn.execute(
+            "insert into threads (id,title,name,cwd,updated_at) "
+            "values ('a','请接手 GridView 任务。功能已经实现，接下来…','GridView 表格组件','/p',1)"
+        )
+        conn.commit()
+        conn.close()
+        row = c.latest_threads(5)[0]
+        self.assertEqual(c.clean_title(row["name"]), "GridView 表格组件")
+
+    def test_project_name_comes_from_projects_table(self):
+        """项目名取 projects.name，而不是目录名。"""
+        conn = sqlite3.connect(c.STATE_DB)
+        conn.execute("insert into projects values ('p1','Bitable 组件库',0)")
+        conn.execute("insert into project_roots values ('p1','/Users/x/bitable/base-ui-component-lib')")
+        conn.execute(
+            "insert into threads (id,title,cwd,updated_at) "
+            "values ('a','t','/Users/x/bitable/base-ui-component-lib/packages/grid',1)"
+        )
+        conn.commit()
+        conn.close()
+        row = c.latest_threads(5)[0]
+        self.assertEqual(row["projectName"], "Bitable 组件库")
+
+    def test_project_resolves_from_nested_subdirectory(self):
+        """会话在项目子目录里时也要归到这个项目。"""
+        conn = sqlite3.connect(c.STATE_DB)
+        conn.execute("insert into projects values ('p1','Faster',3)")
+        conn.execute("insert into project_roots values ('p1','/Users/x/faster')")
+        conn.execute(
+            "insert into threads (id,title,cwd,updated_at) "
+            "values ('a','t','/Users/x/faster/src/deep/nested',1)"
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(c.latest_threads(5)[0]["projectName"], "Faster")
+
+    def test_subagent_threads_are_hidden(self):
+        """子 agent 的线程不是独立会话，不应出现在列表里。"""
+        conn = sqlite3.connect(c.STATE_DB)
+        conn.execute(
+            "insert into threads (id,title,cwd,updated_at,thread_source) "
+            "values ('sub','child work','/p',9,'subagent')"
+        )
+        conn.execute(
+            "insert into threads (id,title,cwd,updated_at,thread_source) "
+            "values ('main','real work','/p',1,'user')"
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual([t["id"] for t in c.latest_threads(5)], ["main"])
 
     def test_missing_db_is_safe(self):
         c.HIST_DB = os.path.join(self.tmp.name, "nope.sqlite")

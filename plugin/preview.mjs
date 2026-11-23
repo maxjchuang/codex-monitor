@@ -88,16 +88,16 @@ const light = {
 
 const groups = [
   ['bitable-sdk', [
-    ['复现并定位甘特图日期错位', '18:53', 'waiting', '是否按东八区重新解析？'],
-    ['修复底部栏未渲染问题', '18:40', 'running', null],
+    ['GridView 表格组件', '18:53', 'waiting', '是否按东八区重新解析？'],
+    ['修复底部栏未渲染', '18:40', 'running', null],
     ['定位双向关联字段显示为空', '17:22', 'stopped', null],
   ]],
-  ['base-ui-component-lib', [
-    ['请接手 GridView 任务', '18:51', 'running', null],
-    ['拉取 develop 并启动 Storybook', '16:03', 'done', null],
+  ['Bitable 组件库', [
+    ['接入 MCP', '18:51', 'running', null],
+    ['拉取 develop 启动 Storybook', '16:03', 'done', null],
   ]],
   ['faster', [
-    ['梳理项目工程分层设计', '15:12', 'done', null],
+    ['Faster Agent', '15:12', 'done', null],
   ]],
 ]
 

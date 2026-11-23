@@ -17,6 +17,7 @@
 import argparse
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -51,22 +52,95 @@ def db(path):
         return None
 
 
+def projects_by_root():
+    """项目显示名与它覆盖的目录。
+
+    Codex 的侧栏显示的是 projects.name（可以是「Bitable 组件库」这种自定义名），
+    而不是目录名。一个项目可以挂多个根目录，所以这里建的是 root -> 项目 的映射。
+    threads.project_id 在库里普遍为空，因此归属只能按 cwd 反查 project_roots。
+    """
+    conn = db(STATE_DB)
+    if not conn:
+        return {}
+    try:
+        rows = conn.execute(
+            "select p.id, p.name, r.path, p.position "
+            "from projects p left join project_roots r on r.project_id = p.id"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+    by_root = {}
+    projects = {}
+    for pid, name, path, position in rows:
+        if pid not in projects:
+            projects[pid] = {
+                "id": pid,
+                "name": name or "",
+                "position": position if position is not None else 1 << 30,
+                "roots": [],
+            }
+        if path:
+            projects[pid]["roots"].append(path)
+    # 同一个目录若被两个项目声明，按 projects.position 先到先得；resolve_project 会
+    # 从最深的目录逐级向上找，所以嵌套根目录天然是「最长匹配」。
+    for proj in sorted(projects.values(), key=lambda p: p["position"]):
+        for root in proj["roots"]:
+            by_root.setdefault(os.path.normpath(root), proj)
+    return by_root
+
+
+def resolve_project(cwd, by_root):
+    """把会话的 cwd 落到某个项目上；返回 (项目名, 项目序号)。"""
+    if not cwd:
+        return None, None
+    path = os.path.normpath(str(cwd))
+    # 先精确匹配，再逐级向上找最近的根目录。
+    probe = path
+    while True:
+        proj = by_root.get(probe)
+        if proj:
+            return proj["name"], proj["position"]
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return None, None
+        probe = parent
+
+
 def latest_threads(limit=20, include_archived=False):
-    """按最近活动取会话（threads 表带 title/cwd，比 app-server 的 preview 更准）。"""
+    """按最近活动取会话。
+
+    标题取 threads.name（Codex 侧栏显示的就是它），没有 name 时才退回 title。
+    项目名取 projects.name，按 cwd 反查 project_roots 得到。
+    """
     conn = db(STATE_DB)
     if not conn:
         return []
     try:
         rows = conn.execute(
-            "select id, title, cwd, updated_at, model, tokens_used, rollout_path "
-            "from threads order by updated_at desc limit ?",
+            # subagent 会话是子 agent 的内部线程，Codex 侧栏不把它们当作独立会话，
+            # 所以这里排除，否则列表会被并行的子任务刷满。
+            "select id, title, name, cwd, updated_at, model, tokens_used, "
+            "rollout_path, is_pinned, source, thread_source, preview "
+            "from threads "
+            "where coalesce(thread_source, '') != 'subagent' "
+            "order by updated_at desc limit ?",
             (limit,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = [dict(r) for r in rows]
     except sqlite3.Error:
         return []
     finally:
         conn.close()
+
+    by_root = projects_by_root()
+    for row in out:
+        proj_name, proj_pos = resolve_project(row.get("cwd"), by_root)
+        row["projectName"] = proj_name
+        row["projectPosition"] = proj_pos
+    return out
 
 
 def latest_turn(thread_id):
@@ -392,6 +466,28 @@ def clip(text, n=110):
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def clean_title(text, n=80):
+    """把一条消息压成适合列表显示的一行标题。
+
+    Codex 的 threads.name 是干净的短名（「GridView 表格组件」），但它只覆盖了
+    一部分会话；其余只能退回首条消息，而那条消息常带换行、代码块和 markdown 标记。
+    这里去掉围栏和行内标记，再折成单行。
+    """
+    raw = str(text or "")
+    if not raw.strip():
+        return ""
+    # 代码围栏整段丢掉：它后面往往是命令，不是会话在讲什么。
+    raw = re.sub(r"```[\s\S]*?```", " ", raw)
+    raw = re.sub(r"```[\s\S]*$", " ", raw)  # 未闭合的围栏
+    # 行内代码保留文字，去掉反引号；其余常见标记直接去掉符号。
+    raw = re.sub(r"`([^`]*)`", r"\1", raw)
+    raw = re.sub(r"\*\*([^*]*)\*\*", r"\1", raw)
+    raw = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", raw)
+    raw = re.sub(r"(?m)^\s{0,3}[-*+]\s+", "", raw)
+    raw = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", raw)
+    return clip(raw, n)
+
+
 def hhmm(ts):
     """接受秒或毫秒时间戳。"""
     if not ts:
@@ -524,8 +620,16 @@ def build_list(srv, limit=12):
         out.append({
             "id": t["id"],
             "cwd": t.get("cwd"),
-            "project": os.path.basename(str(t.get("cwd") or "")) or "-",
-            "title": t.get("title") or clip(first_user_text(t["id"]), 80) or "(无标题)",
+            # 与 Codex 侧栏一致：项目用 projects.name，会话用 threads.name。
+            # 两者都可能为空，空的时候才退回目录名 / 首条消息。
+            "project": t.get("projectName")
+            or os.path.basename(str(t.get("cwd") or ""))
+            or "-",
+            "projectPosition": t.get("projectPosition"),
+            "title": clean_title(t.get("name"))
+            or clean_title(t.get("title"))
+            or clean_title(first_user_text(t["id"]))
+            or "(无标题)",
             "model": t.get("model"),
             "updatedAt": t.get("updated_at"),
             "state": kind,
@@ -558,8 +662,14 @@ def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
     return {
         "id": thread_id,
         "cwd": meta.get("cwd"),
-        "project": os.path.basename(str(meta.get("cwd") or "")) or "-",
-        "title": meta.get("title") or clip(first_user_text(thread_id), 80) or "(无标题)",
+        "project": meta.get("projectName")
+        or os.path.basename(str(meta.get("cwd") or ""))
+        or "-",
+        "projectPosition": meta.get("projectPosition"),
+        "title": clean_title(meta.get("name"))
+        or clean_title(meta.get("title"))
+        or clean_title(first_user_text(thread_id))
+        or "(无标题)",
         "model": meta.get("model"),
         "updatedAt": meta.get("updated_at"),
         "state": kind,

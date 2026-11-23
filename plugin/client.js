@@ -503,8 +503,13 @@ window.__ModuleLoader__.load({
         group.running = states.filter((x) => x === 'running').length
         group.rank = Math.min(...states.map((x) => STATE_RANK[x] ?? 9))
         group.updatedAt = Math.max(...group.sessions.map((s) => s.updatedAt ?? 0))
+        // Codex 自己给项目排了序（projects.position），沿用它能保持两边顺序一致。
+        group.position = Math.min(
+          ...group.sessions.map((s) => (typeof s.projectPosition === 'number' ? s.projectPosition : 1 << 30)),
+        )
       }
-      groups.sort((a, b) => a.rank - b.rank || b.updatedAt - a.updatedAt)
+      // 需要你注意的项目永远优先；同一优先级内跟 Codex 的项目顺序走。
+      groups.sort((a, b) => a.rank - b.rank || a.position - b.position || b.updatedAt - a.updatedAt)
       return groups
     }
 
