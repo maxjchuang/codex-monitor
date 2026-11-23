@@ -133,6 +133,8 @@ const statusPayload = {
     updatedAt: 1795431200, state: 'waiting', activityAgeSec: 12,
     questions: sessions[0].questions,
     items: [],
+    transcriptHasMore: true,
+    transcriptBefore: 1795430000000,
     transcript: [
       { role: 'user', at: 1795431000, text: '帮我修一下 GridView 的空行。' },
       // 一轮的中间过程收在 work 块里，默认收起；最终答复单独露出。
@@ -168,7 +170,8 @@ const dict = {
   'chat.placeholderPick': '从左边选一个会话', 'chat.placeholderPickHint': '也可以直接派活',
   'chat.loading': '正在读取对话…', 'chat.empty': '这个会话还没有内容',
   'chat.error': '读不到这个会话：{error}', 'chat.retry': '重试',
-  'chat.transcriptTruncated': '只显示最近 {n} 条。', 'chat.actionRun': '共 {n} 步',
+  'chat.transcriptTruncated': '只显示最近 {n} 条。',
+  'chat.loadMore': '加载更早的消息', 'chat.loadingMore': '正在加载更早的消息…', 'chat.actionRun': '共 {n} 步',
   'chat.you': '你', 'chat.agent': 'Codex', 'chat.askingYou': 'Codex 在等你回答',
   'reply.placeholder': '给这个 Codex 会话发消息…', 'reply.send': '发送',
   'reply.sending': '发送中…', 'reply.sent': '已提交', 'reply.failed': '投递失败：{error}',
@@ -351,6 +354,8 @@ const checks = [
   ['both sessions listed', joined.includes('修 GridView') && joined.includes('讨论设计')],
   ['waiting question surfaced in list', joined.includes('是否删除空白子记录')],
   ['auto-selected the top session', calls.some((u) => u.includes('status'))],
+  ['transcript: load-more control offered when more exists',
+    joined.includes('加载更早的消息')],
   ['transcript: user message rendered', joined.includes('帮我修一下 GridView 的空行')],
   // 中间过程默认收起，正文里不该出现里面的内容，但「用时」那一行要在。
   ['refresh is an icon button, not text', refresh_is_icon_button()],

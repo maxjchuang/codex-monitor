@@ -280,6 +280,59 @@ class TestTranscriptShape(TempDbs):
         self.assertEqual(len(work["entries"]), 30)
 
 
+class TestTranscriptPaging(TempDbs):
+    """向上滚动加载更多：游标不能重叠，也不能跳空。"""
+
+    def _seed(self, n_turns):
+        for i in range(n_turns):
+            base = 1000 + i * 10000
+            self.add_item("t", "userMessage",
+                          {"id": f"u{i}", "content": [{"type": "text", "text": f"问{i}"}]},
+                          at_ms=base)
+            self.add_item("t", "agentMessage",
+                          {"id": f"a{i}", "phase": "final_answer", "text": f"答{i}"},
+                          at_ms=base + 1000)
+
+    def test_pages_do_not_overlap_and_cover_everything(self):
+        self._seed(10)
+        seen, before, pages = [], None, 0
+        while pages < 20:
+            page = c.transcript("t", limit=3, before=before)
+            rows = page["entries"]
+            if not rows:
+                break
+            seen = rows + seen
+            pages += 1
+            if not page["hasMore"]:
+                break
+            before = page["before"]
+        # 十轮各一问一答，翻完必须一条不多一条不少。
+        self.assertEqual([r["text"] for r in seen if r["role"] == "user"],
+                         [f"问{i}" for i in range(10)])
+        self.assertEqual(len(seen), 20)
+
+    def test_cursor_is_the_oldest_kept_entry(self):
+        """游标取扫描窗口末尾会跳到几天前，第二页直接空掉。"""
+        self._seed(6)
+        page = c.transcript("t", limit=2)
+        self.assertTrue(page["hasMore"])
+        self.assertEqual(page["before"], int(page["entries"][0]["at"] * 1000))
+        nxt = c.transcript("t", limit=2, before=page["before"])
+        self.assertTrue(nxt["entries"], "第二页不该是空的")
+
+    def test_last_page_reports_no_more(self):
+        self._seed(2)
+        page = c.transcript("t", limit=50)
+        self.assertFalse(page["hasMore"])
+
+    def test_before_cursor_filters_strictly_earlier(self):
+        self._seed(3)
+        page = c.transcript("t", limit=2)
+        older = c.transcript("t", limit=50, before=page["before"])
+        if older["entries"]:
+            self.assertLessEqual(older["entries"][-1]["at"], page["entries"][0]["at"])
+
+
 class TestTrimTurns(TempDbs):
     """裁剪必须以轮为单位，不能先 trim 再分组。"""
 

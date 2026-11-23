@@ -4,68 +4,6 @@
     "description": "Watch the Codex desktop app from the sidebar: which sessions are running, what each one is doing, and which one is waiting for your answer. Send work into any session without switching windows.",
     "detail": "docs/DETAIL.md"
   },
-  "panel": {
-    "label": "Codex monitor",
-    "labelWaiting": "Codex monitor ({n} waiting)"
-  },
-  "page": {
-    "title": "Codex monitor",
-    "refresh": "Refresh",
-    "empty": "No Codex sessions found. Check that ~/.codex exists and the desktop app has run at least once.",
-    "errorTitle": "Could not read Codex state",
-    "retry": "Retry",
-    "pythonMissing": "python3 was not found. Set CODEX_MONITOR_PYTHON to its path and reload the plugin.",
-    "counts": "{total} sessions · {running} running · {waiting} waiting",
-    "updated": "Updated {time}"
-  },
-  "state": {
-    "running": "Running",
-    "waiting": "Waiting for you",
-    "done": "Done",
-    "failed": "Failed",
-    "stopped": "Stopped",
-    "idle": "Idle"
-  },
-  "row": {
-    "started": "Started {time}",
-    "duration": "Took {seconds}s",
-    "model": "Model",
-    "directory": "Directory",
-    "id": "Session",
-    "timing": "Timing"
-  },
-  "reply": {
-    "placeholder": "Message this Codex session…",
-    "send": "Send",
-    "sending": "Sending…",
-    "cancel": "Cancel",
-    "sent": "Submitted to Codex; it will pick this up shortly.",
-    "failed": "Could not deliver: {error}",
-    "note": "Appends a new turn; does not interrupt work already running. ⌘↵ sends.",
-    "options": "Options Codex offered (click to fill in, you still send):"
-  },
-  "list": {
-    "groupWaiting": "{n} waiting",
-    "groupRunning": "{n} running",
-    "showMore": "Show {n} more",
-    "title": "Sessions",
-    "empty": "No sessions yet",
-    "show": "Show session list",
-    "hide": "Hide session list"
-  },
-  "chat": {
-    "placeholderPick": "Pick a session on the left to see where it got to.",
-    "placeholderPickHint": "You can also dispatch work to it from here.",
-    "loading": "Reading the conversation…",
-    "empty": "This session has no messages yet.",
-    "error": "Could not read this session: {error}",
-    "retry": "Retry",
-    "you": "You",
-    "agent": "Codex",
-    "askingYou": "Codex is waiting for your answer",
-    "transcriptTruncated": "Showing the latest {n} entries only.",
-    "actionRun": "{n} steps"
-  },
   "panel.label": "Codex monitor",
   "panel.labelWaiting": "Codex monitor ({n} waiting)",
   "page.title": "Codex monitor",
@@ -105,6 +43,8 @@
   "chat.agent": "Codex",
   "chat.askingYou": "Codex is waiting for your answer",
   "chat.transcriptTruncated": "Showing the latest {n} entries only.",
+  "chat.loadMore": "Load earlier messages",
+  "chat.loadingMore": "Loading earlier messages…",
   "chat.actionRun": "{n} steps",
   "work.elapsed": "Took {time}",
   "work.elapsedShort": "Took {n}s",

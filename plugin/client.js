@@ -15,6 +15,9 @@ window.__ModuleLoader__.load({
     const { useEffect, useRef, useState, useSyncExternalStore, useCallback } = React
 
     const NS = 'codex-monitor'
+    // 每次请求带多少条对话。首屏和「向上滚加载更多」用同一个值：
+    // 太小要滚好几次，太大就失去分页的意义（200 条约 500KB）。
+    const TRANSCRIPT_PAGE = 40
     const PANEL_ID = 'codex-monitor'
 
     // ── copy ────────────────────────────────────────────────────────────────
@@ -58,6 +61,8 @@ window.__ModuleLoader__.load({
       'chat.agent': 'Codex',
       'chat.askingYou': 'Codex 在等你回答',
       'chat.transcriptTruncated': '只显示最近 {n} 条。',
+      'chat.loadMore': '加载更早的消息',
+      'chat.loadingMore': '正在加载更早的消息…',
       'chat.actionRun': '共 {n} 步',
       'work.elapsed': '用时 {time}',
       'work.elapsedShort': '用时 {n} 秒',
@@ -113,6 +118,8 @@ window.__ModuleLoader__.load({
       'chat.agent': 'Codex',
       'chat.askingYou': 'Codex is waiting for your answer',
       'chat.transcriptTruncated': 'Showing the latest {n} entries only.',
+      'chat.loadMore': 'Load earlier messages',
+      'chat.loadingMore': 'Loading earlier messages…',
       'chat.actionRun': '{n} steps',
       'work.elapsed': 'Took {time}',
       'work.elapsedShort': 'Took {n}s',
@@ -510,6 +517,18 @@ window.__ModuleLoader__.load({
 @keyframes cxm-send-spin{to{transform:rotate(360deg)}}
 .cxm-send-spin{animation:.8s linear infinite cxm-send-spin}
 @media (prefers-reduced-motion:reduce){.cxm-send-spin{animation-duration:2.4s}}
+/* 吸在滚动区顶部：滚动时它留在原地，不会看起来像一条消息内容。 */
+.cxm-more{position:sticky;top:0;z-index:1;display:flex;justify-content:center;
+  padding:6px 0 10px;flex:none;
+  background:linear-gradient(var(--dsw-alias-bg-base) 70%,transparent)}
+.cxm-more-btn{border:0;background:none;padding:4px 8px;cursor:pointer;font-family:inherit;
+  font-size:12px;line-height:18px;border-radius:var(--dsw-radius-sm);
+  color:var(--dsw-alias-label-tertiary)}
+.cxm-more-btn:hover{color:var(--dsw-alias-label-primary);
+  background:var(--dsw-alias-interactive-bg-hover)}
+.cxm-more-btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset:2px}
+.cxm-more{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .cxm-note{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
 .cxm-ok{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;
   display:flex;gap:6px;align-items:center}
@@ -1372,9 +1391,36 @@ window.__ModuleLoader__.load({
     function Conversation({ t, listOpen, onToggleList, session, detail, error, onRetry, onSent }) {
       const scroller = useRef(null)
       const stick = useRef(true)
-      const entries = detail?.transcript ?? []
+      // 向上滚加载出来的更早条目。轮询刷新只会换掉 detail 里的最近一页，
+      // 这些更早的必须留着，否则每 5 秒就把用户翻上去的内容冲掉。
+      const [older, setOlder] = useState([])
+      const [before, setBefore] = useState(null)
+      const [hasMore, setHasMore] = useState(false)
+      const [loadingMore, setLoadingMore] = useState(false)
+      const olderKey = useRef(null)
+
+      const fresh = detail?.transcript ?? []
+      const entries = older.length ? [...older, ...fresh] : fresh
       const count = entries.length
       const truncated = detail?.transcriptTruncated === true
+
+      // 换会话就把翻上去的内容清掉，否则会串到另一个会话里。
+      useEffect(() => {
+        setOlder([])
+        setBefore(null)
+        setHasMore(false)
+        olderKey.current = null
+      }, [session.id])
+
+      // 详情每次刷新都会带来新的 before/hasMore，用它同步游标。
+      useEffect(() => {
+        if (olderKey.current === session.id) return
+        if (detail?.transcriptBefore) {
+          setBefore(detail.transcriptBefore)
+          setHasMore(detail.transcriptHasMore === true)
+          olderKey.current = session.id
+        }
+      }, [detail, session.id])
 
       // Follow the tail only while the reader is already at the bottom, so a poll
       // cannot yank the view away from something they scrolled back to read.
@@ -1384,10 +1430,44 @@ window.__ModuleLoader__.load({
         node.scrollTop = node.scrollHeight
       }, [count, session.id])
 
+      // 向上滚到顶附近时取更早的一页。加载完要把滚动位置补回去，
+      // 否则新插入的内容会把视口顶走，用户会觉得页面「跳」了一下。
+      const loadMore = useCallback(async () => {
+        if (loadingMore || !hasMore || !before) return
+        const node = scroller.current
+        const prevHeight = node ? node.scrollHeight : 0
+        const prevTop = node ? node.scrollTop : 0
+        setLoadingMore(true)
+        try {
+          const payload = await call('POST', 'codex-monitor/more', {
+            threadId: session.id,
+            limit: TRANSCRIPT_PAGE,
+            before,
+          })
+          const page = payload.data ?? {}
+          const rows = page.entries ?? []
+          if (rows.length) setOlder((prev) => [...rows, ...prev])
+          setBefore(page.before ?? null)
+          setHasMore(page.hasMore === true && rows.length > 0)
+          stick.current = false
+          // 等 DOM 长出新的高度再补滚动位置。
+          requestAnimationFrame(() => {
+            const now = scroller.current
+            if (now) now.scrollTop = now.scrollHeight - prevHeight + prevTop
+          })
+        } catch {
+          setHasMore(false)
+        } finally {
+          setLoadingMore(false)
+        }
+      }, [loadingMore, hasMore, before, session.id])
+
       const onScroll = () => {
         const node = scroller.current
         if (!node) return
         stick.current = node.scrollHeight - node.scrollTop - node.clientHeight < 40
+        // 顶部留 80px 余量，快滚到头就提前取，别等真的贴顶。
+        if (node.scrollTop < 80) loadMore()
       }
 
       const questions = detail?.questions ?? session.questions ?? []
@@ -1429,6 +1509,19 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'cxm-transcript', ref: scroller, onScroll },
+          hasMore || loadingMore
+            ? h(
+                'div',
+                { className: 'cxm-more', style: { textAlign: 'center', flex: 'none' } },
+                loadingMore
+                  ? t('chat.loadingMore')
+                  : h(
+                      'button',
+                      { type: 'button', className: 'cxm-more-btn', onClick: loadMore },
+                      t('chat.loadMore'),
+                    ),
+              )
+            : null,
           truncated
             ? h(
                 'div',
@@ -1537,7 +1630,13 @@ window.__ModuleLoader__.load({
       const loadDetail = useCallback(async (id) => {
         if (!id) return
         try {
-          const payload = await call('POST', 'codex-monitor/status', { threadId: id, items: 8 })
+          // 首屏只取最近几十条。一个活跃会话 200 条能有近 500KB，
+          // 而用户打开时几乎总是先看最后几句。更早的等向上滚动再要。
+          const payload = await call('POST', 'codex-monitor/status', {
+            threadId: id,
+            items: 8,
+            transcript: TRANSCRIPT_PAGE,
+          })
           setDetail(payload.data)
           setDetailError(null)
         } catch (error) {

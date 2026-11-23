@@ -237,6 +237,7 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
       </div>
     </div>
     <div class="cxm-transcript">
+      <div class="cxm-more"><button class="cxm-more-btn">加载更早的消息</button></div>
       <div class="cxm-flow">
         <div class="cxm-msg" data-role="user">
           <div class="cxm-bubble">帮我看看截图里箭头指向的「添加本地文件」在暗色下的默认态和悬停态。</div>

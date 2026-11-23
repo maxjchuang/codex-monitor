@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 CODEX = os.environ.get("CODEX_BIN", "codex")
 CODEX_HOME = os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
@@ -189,11 +190,13 @@ def recent_items(thread_id, limit=8):
     return out
 
 
-def transcript(thread_id, limit=200, scan_limit=4000):
+def transcript(thread_id, limit=200, scan_limit=4000, before=None):
     """按时间正序返回一段对话，供聊天窗口渲染。
 
     只保留对“读起来像聊天”有意义的条目：用户说的话、Codex 说的话，以及被折叠成
     一行的动作（跑命令、改文件等）。推理过程不入正文，避免把聊天窗口灌满。
+
+    before 是毫秒时间戳游标，只取早于它的条目，用于向上滚动加载更多。
     """
     conn = db(HIST_DB)
     if not conn:
@@ -202,11 +205,19 @@ def transcript(thread_id, limit=200, scan_limit=4000):
         # A busy session can be thousands of rows of mostly commands and reasoning.
         # Scanning a wider window (then trimming to `limit` below) keeps the actual
         # conversation from being crowded out by tool chatter.
-        rows = conn.execute(
-            "select item_type, created_at_ms, item_json from thread_items "
-            "where thread_id=? order by created_at_ms desc limit ?",
-            (thread_id, max(1, scan_limit)),
-        ).fetchall()
+        if before:
+            rows = conn.execute(
+                "select item_type, created_at_ms, item_json from thread_items "
+                "where thread_id=? and created_at_ms < ? "
+                "order by created_at_ms desc limit ?",
+                (thread_id, int(before), max(1, scan_limit)),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "select item_type, created_at_ms, item_json from thread_items "
+                "where thread_id=? order by created_at_ms desc limit ?",
+                (thread_id, max(1, scan_limit)),
+            ).fetchall()
     except sqlite3.Error:
         return {"entries": [], "truncated": False}
     finally:
@@ -249,7 +260,20 @@ def transcript(thread_id, limit=200, scan_limit=4000):
     # 先分组再裁剪：先 trim 会把一轮切碎（结尾那几十条命令占满了窗口，
     # 用户的提问和最终答复反而被挤掉），而且 work 块也就没法成立。
     grouped = group_turns(out, turn_spans(thread_id))
-    return {"entries": trim_turns(grouped, limit), "truncated": truncated}
+    kept = trim_turns(grouped, limit)
+    # 还有更早的内容吗？把游标一起返回，前端向上滚时带着它来要上一页。
+    # 判断依据是「这一页是否被裁过」或者「扫描窗口本身就已经满了」。
+    more = len(kept) < len(grouped) or len(rows) >= max(1, scan_limit)
+    # 游标必须取「这一页最早那条」的时间，不能取扫描窗口的最后一行：
+    # 窗口是按 4000 行截的，那一行可能比本页最早的一条还早好几天，
+    # 拿它当游标会直接跳到几天前，第二页就空了。
+    oldest = int(kept[0]["at"] * 1000) if kept and kept[0].get("at") else None
+    return {
+        "entries": kept,
+        "truncated": truncated,
+        "hasMore": bool(more and oldest),
+        "before": oldest,
+    }
 
 
 def turn_spans(thread_id):
@@ -644,6 +668,10 @@ class AppServer:
         )
         self.messages = []
         self.lock = threading.Lock()
+        # 读线程收到消息就唤醒等结果的人，不再靠轮询。
+        self.cond = threading.Condition(self.lock)
+        # stdin 是多线程共用的，写一条完整的行必须独占。
+        self._write_lock = threading.Lock()
         threading.Thread(target=self._read, daemon=True).start()
         self._id = 0
         self.call("initialize", {"clientInfo": {"name": "codex-monitor", "version": "0.1"}})
@@ -658,40 +686,50 @@ class AppServer:
                 msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            with self.lock:
+            with self.cond:
                 self.messages.append(msg)
+                self.cond.notify_all()
 
     def _write(self, payload):
         self.proc.stdin.write(json.dumps(payload) + "\n")
         self.proc.stdin.flush()
 
     def call(self, method, params=None, timeout=180):
-        self._id += 1
-        rid = self._id
-        self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
+        with self._write_lock:
+            self._id += 1
+            rid = self._id
+            self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}})
         deadline = time.time() + timeout
-        while time.time() < deadline:
-            with self.lock:
-                for msg in self.messages:
+        with self.cond:
+            while True:
+                for i, msg in enumerate(self.messages):
                     if msg.get("id") == rid and ("result" in msg or "error" in msg):
+                        # 拿到的应答立刻从缓冲里删掉，长跑的服务不会越攒越多。
+                        del self.messages[i]
                         if "error" in msg:
                             raise RuntimeError(f"{method}: {msg['error']}")
                         return msg["result"]
-            time.sleep(0.05)
-        raise TimeoutError(f"{method} 超时")
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise TimeoutError(f"{method} 超时")
+                # 50ms 一次的空转改成阻塞等通知：有应答立刻醒，没应答就睡到超时。
+                self.cond.wait(min(remaining, 1.0))
 
     def notify(self, method, params=None):
         self._write({"jsonrpc": "2.0", "method": method, "params": params or {}})
 
     def wait_notification(self, method, timeout):
         deadline = time.time() + timeout
-        while time.time() < deadline:
-            with self.lock:
-                for msg in self.messages:
+        with self.cond:
+            while True:
+                for i, msg in enumerate(self.messages):
                     if msg.get("method") == method:
+                        del self.messages[i]
                         return msg.get("params")
-            time.sleep(0.2)
-        return None
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                self.cond.wait(min(remaining, 1.0))
 
     def close(self):
         try:
@@ -740,10 +778,20 @@ def deliver(thread_id, message, wait_sec, resume=True, srv=None, quiet=False):
 def build_list(srv, limit=12):
     """会话列表的结构化视图。UI 与 CLI 共用，避免两套判断逻辑漂移。"""
     threads = latest_threads(limit)
+    # 每个会话都要问一次 app-server，串行做 N 个会话就是 N 次往返。
+    # 并发发出去，总耗时从「N 倍单次」变成「一次往返」。
     rows = []
-    for t in threads:
-        turn, questions = live_turn(srv, t["id"], items_limit=1)
-        rows.append((t, turn, questions))
+    if threads:
+        with ThreadPoolExecutor(max_workers=min(8, len(threads))) as pool:
+            futures = [
+                pool.submit(live_turn, srv, t["id"], 1) for t in threads
+            ]
+            for t, fut in zip(threads, futures):
+                try:
+                    turn, questions = fut.result()
+                except Exception:
+                    turn, questions = None, None
+                rows.append((t, turn, questions))
 
     now_ms = int(time.time() * 1000)
     out = []
@@ -816,6 +864,8 @@ def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
         "questions": questions or [],
         "transcript": chat["entries"],
         "transcriptTruncated": chat["truncated"],
+        "transcriptHasMore": chat["hasMore"],
+        "transcriptBefore": chat["before"],
         "items": [
             {"type": it["type"], "at": it["at"],
              "label": describe_item(it)[0], "detail": clip(describe_item(it)[1], 300)}
@@ -1040,6 +1090,24 @@ def serve(port=0, host="127.0.0.1"):
                 except Exception as exc:
                     reset_app_server()
                     self._json({"ok": False, "error": str(exc)}, 500)
+                return
+
+            if path == "/codex-monitor/more":
+                # 向上滚动时只要更早的一页，不带详情里那些重复字段。
+                tid = payload.get("threadId")
+                if not tid:
+                    self._json({"ok": False, "error": "threadId required"}, 400)
+                    return
+                try:
+                    page = transcript(
+                        tid,
+                        int(payload.get("limit") or 30),
+                        before=payload.get("before"),
+                    )
+                except Exception as exc:
+                    self._json({"ok": False, "error": str(exc)}, 500)
+                    return
+                self._json({"ok": True, "data": page})
                 return
 
             if path == "/codex-monitor/send":
