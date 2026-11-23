@@ -243,6 +243,85 @@ class TestWorkGrouping(TempDbs):
         self.assertEqual(c.group_turns([], []), [])
 
 
+class TestTranscriptShape(TempDbs):
+    """端到端：transcript() 的输出必须真的带 work 块和最终答复。"""
+
+    def _write_turn(self, tid, i, n_cmds=30):
+        import json as _json
+        base = 1000 + i * 10000
+        self.add_item(tid, "userMessage",
+                      {"id": f"u{i}", "content": [{"type": "text", "text": f"第{i}个问题"}]},
+                      at_ms=base)
+        for k in range(n_cmds):
+            self.add_item(tid, "commandExecution",
+                          {"command": f"/bin/zsh -lc 'echo {k}'"}, at_ms=base + 10 + k)
+        self.add_item(tid, "agentMessage",
+                      {"id": f"a{i}", "phase": "final_answer", "text": f"第{i}个答复"},
+                      at_ms=base + 5000)
+
+    def test_returns_user_work_and_final_answer(self):
+        """一轮里塞满命令时，用户提问和最终答复都不能被挤掉。"""
+        for i in range(3):
+            self._write_turn("t", i)
+        r = c.transcript("t", limit=20)
+        roles = [e["role"] for e in r["entries"]]
+        self.assertIn("work", roles)
+        self.assertIn("user", roles)
+        self.assertIn("agent", roles)
+        # 每一轮都完整：user 在前，work 中间，final 在后。
+        self.assertEqual(roles[0], "user")
+        self.assertEqual(roles[-1], "agent")
+
+    def test_work_block_absorbs_the_commands(self):
+        self._write_turn("t", 0, n_cmds=30)
+        r = c.transcript("t", limit=20)
+        work = [e for e in r["entries"] if e["role"] == "work"][0]
+        self.assertEqual(work["count"], 30)
+        self.assertEqual(len(work["entries"]), 30)
+
+
+class TestTrimTurns(TempDbs):
+    """裁剪必须以轮为单位，不能先 trim 再分组。"""
+
+    def _turn(self, i):
+        return [
+            {"role": "user", "at": i, "text": f"问{i}"},
+            {"role": "work", "at": i, "durationMs": 1000, "count": 2,
+             "entries": [{"role": "action", "at": i, "label": "执行命令", "text": "ls"}]},
+            {"role": "agent", "at": i, "text": f"答{i}", "final": True},
+        ]
+
+    def test_keeps_whole_turns_not_a_slice_of_one(self):
+        grouped = []
+        for i in range(10):
+            grouped.extend(self._turn(i))
+        out = c.trim_turns(grouped, 9)
+        roles = [e["role"] for e in out]
+        # 三的整数倍，正好三轮，且必须以 user 开头、agent 结尾。
+        self.assertEqual(len(out), 9)
+        self.assertEqual(roles[0], "user")
+        self.assertEqual(roles[-1], "agent")
+
+    def test_drops_leading_orphan_work_block(self):
+        """截断落在一轮中间时，首屏不能是一段没有提问也没有结论的过程。"""
+        grouped = [{"role": "work", "at": 0, "count": 1,
+                    "entries": [{"role": "action", "at": 0, "label": "执行命令", "text": "ls"}]}]
+        for i in range(5):
+            grouped.extend(self._turn(i))
+        out = c.trim_turns(grouped, 6)
+        self.assertNotEqual(out[0]["role"], "work")
+
+    def test_busy_tail_does_not_crowd_out_the_conversation(self):
+        """一轮里几十条命令只算一个 work 块，不该把整轮挤出窗口。"""
+        grouped = self._turn(0)
+        grouped[1]["count"] = 80
+        out = c.trim_turns(grouped, 3)
+        self.assertEqual([e["role"] for e in out], ["user", "work", "agent"])
+
+    def test_empty(self):
+        self.assertEqual(c.trim_turns([], 10), [])
+
+
 class TestThreads(TempDbs):
     def test_latest_threads_sorted_by_update(self):
         conn = sqlite3.connect(c.STATE_DB)

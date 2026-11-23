@@ -326,8 +326,8 @@ window.__ModuleLoader__.load({
 
 /* Transcript follows the native conversation rhythm: one centred column, a 16px
    flow gap, and no bubble around assistant text. */
-.cxm-transcript{flex:1;min-height:0;overflow:auto;padding:16px 24px 8px;display:flex;
-  flex-direction:column;scroll-behavior:smooth}
+.cxm-transcript{flex:1;min-height:0;overflow:auto;box-sizing:border-box;
+  padding:16px 24px 8px;display:flex;flex-direction:column;scroll-behavior:smooth}
 .cxm-flow{width:100%;max-width:min(100%,920px);margin:0 auto;display:flex;
   flex-direction:column;gap:12px;min-width:0}
 
@@ -442,7 +442,9 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-primary)}
 
 /* composer: same centred column as the transcript, no full-width bar */
-.cxm-composer{flex:none;display:flex;flex-direction:column;gap:6px;
+/* box-sizing 必须写：width:100% 再叠左右 padding，不加 border-box 总宽会超出容器，
+   右侧被裁掉一截（发送键和卡片右边框都会缺）。 */
+.cxm-composer{flex:none;display:flex;flex-direction:column;gap:6px;box-sizing:border-box;
   width:100%;max-width:min(100%,920px);margin:0 auto;padding:8px 24px 20px}
 .cxm-opts{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .cxm-opts-label{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;flex:none}

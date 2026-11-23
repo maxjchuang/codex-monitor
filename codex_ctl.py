@@ -246,8 +246,10 @@ def transcript(thread_id, limit=200, scan_limit=4000):
         label, detail = describe_item({"type": kind, "data": payload})
         out.append({"role": "action", "at": at, "label": label, "text": clip(detail, 240)})
 
-    entries = trim_transcript(out, limit)
-    return {"entries": group_turns(entries, turn_spans(thread_id)), "truncated": truncated}
+    # 先分组再裁剪：先 trim 会把一轮切碎（结尾那几十条命令占满了窗口，
+    # 用户的提问和最终答复反而被挤掉），而且 work 块也就没法成立。
+    grouped = group_turns(out, turn_spans(thread_id))
+    return {"entries": trim_turns(grouped, limit), "truncated": truncated}
 
 
 def turn_spans(thread_id):
@@ -343,6 +345,35 @@ def group_turns(entries, spans):
             })
         if turn["final"] is not None:
             out.append(turn["final"])
+    return out
+
+
+def trim_turns(grouped, limit):
+    """按轮保留最近 limit 条，再把相邻的同轮动作压一下。
+
+    裁剪单位是「条目」但计数按分组后的结果来，因为一个 work 块无论里面装了多少
+    条命令，在界面上只占一行。这样窗口里留下的是若干轮完整对话，而不是一截被
+    命令灌满的尾巴。
+    """
+    if not grouped:
+        return []
+    kept = grouped[-limit:] if limit and len(grouped) > limit else grouped
+    # 截断可能落在一轮中间，把开头那个孤立的 work 块丢掉，免得首屏是一段
+    # 没有提问也没有结论的过程。
+    if len(kept) < len(grouped) and kept and kept[0]["role"] == "work":
+        kept = kept[1:]
+    out = []
+    run = []
+    for entry in kept:
+        if entry["role"] == "action":
+            run.append(entry)
+            continue
+        if run:
+            out.extend(collapse_run(run))
+            run = []
+        out.append(entry)
+    if run:
+        out.extend(collapse_run(run))
     return out
 
 
