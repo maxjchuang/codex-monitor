@@ -84,6 +84,11 @@ const React = {
   useCallback(fn) {
     return fn
   },
+  // 真实 React 的 useLayoutEffect 在绘制前跑。这个假实现本来就在 render 之后
+  // 统一 flush effects，语义足够接近，直接复用同一套槽位。
+  useLayoutEffect(fn, deps) {
+    return React.useEffect(fn, deps)
+  },
   useContext(c) {
     for (let i = contextStack.length - 1; i >= 0; i -= 1) {
       if (contextStack[i].ctx === c) return contextStack[i].value
@@ -387,6 +392,14 @@ const checks = [
   ['send button has no text label', send_has_no_text()],
   ['send button sits in its own dock row', send_is_in_dock()],
   ['composer is a card, not a bordered row', composer_is_card()],
+  // 容器上开 smooth 会让「切会话时贴到底部」变成一段动画，
+  // 表现就是打开会话先看到顶部、然后自己滚下去。
+  ['transcript does not animate its scroll on open', (() => {
+    // 从注入到 head 的样式表里读，别重新解析一遍 client.js。
+    const style = headChildren.find((el) => el['data-plugin-css'] === 'codex-monitor')
+    const css = style ? String(style.textContent) : ''
+    return !/\.cxm-transcript\{[^}]*scroll-behavior:\s*smooth/.test(css)
+  })()],
 ]
 // ── list collapse ─────────────────────────────────────────────────────────────
 function toggle_hides_list() {

@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useEffect, useRef, useState, useSyncExternalStore, useCallback } = React
+    const { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, useCallback } = React
 
     const NS = 'codex-monitor'
     // 每次请求带多少条对话。首屏和「向上滚加载更多」用同一个值：
@@ -333,8 +333,11 @@ window.__ModuleLoader__.load({
 
 /* Transcript follows the native conversation rhythm: one centred column, a 16px
    flow gap, and no bubble around assistant text. */
+/* 容器本身不设 smooth。DSH 也是 scroll-behavior:auto，平滑只在需要时由 JS
+   显式指定。全局开 smooth 会让「切会话时贴到底部」这个赋值也变成动画，
+   看起来就是打开会话先滚一遍。 */
 .cxm-transcript{flex:1;min-height:0;overflow:auto;box-sizing:border-box;
-  padding:16px 24px 8px;display:flex;flex-direction:column;scroll-behavior:smooth}
+  padding:16px 24px 8px;display:flex;flex-direction:column}
 .cxm-flow{width:100%;max-width:min(100%,920px);margin:0 auto;display:flex;
   flex-direction:column;gap:12px;min-width:0}
 
@@ -1405,11 +1408,13 @@ window.__ModuleLoader__.load({
       const truncated = detail?.transcriptTruncated === true
 
       // 换会话就把翻上去的内容清掉，否则会串到另一个会话里。
+      // stick 也要复位：上一个会话可能被你滚上去过，那不该影响新会话的初始位置。
       useEffect(() => {
         setOlder([])
         setBefore(null)
         setHasMore(false)
         olderKey.current = null
+        stick.current = true
       }, [session.id])
 
       // 详情每次刷新都会带来新的 before/hasMore，用它同步游标。
@@ -1424,7 +1429,9 @@ window.__ModuleLoader__.load({
 
       // Follow the tail only while the reader is already at the bottom, so a poll
       // cannot yank the view away from something they scrolled back to read.
-      useEffect(() => {
+      // 用 layout effect：在浏览器绘制之前就把位置定好，否则会先画出一帧顶部
+      // 再跳到底部，看起来就是「打开会话时自己滚了一下」。
+      useLayoutEffect(() => {
         const node = scroller.current
         if (!node || !stick.current) return
         node.scrollTop = node.scrollHeight
@@ -1451,6 +1458,7 @@ window.__ModuleLoader__.load({
           setHasMore(page.hasMore === true && rows.length > 0)
           stick.current = false
           // 等 DOM 长出新的高度再补滚动位置。
+          // 等 DOM 长出新的高度再补滚动位置，否则新内容会把视口顶走。
           requestAnimationFrame(() => {
             const now = scroller.current
             if (now) now.scrollTop = now.scrollHeight - prevHeight + prevTop
