@@ -470,6 +470,49 @@ class TestStalledProjection(TempDbs):
         self.assertEqual([e["text"] for e in entries], ["只有这条"])
 
 
+class TestLockKind(TempDbs):
+    """锁住的原因决定用户该做什么：正在跑只能等，只是开着可以去关掉。
+
+    Codex 桌面端只要打开过某个会话就一直占着不放，哪怕它已经闲着几小时
+    （实测一个进程同时占着 11 个会话）。所以不能只说「被占用」。
+    """
+
+    def test_running_turn_is_busy_even_without_an_owner(self):
+        # 真在跑的时候不用去查是谁占的，结论一定是等。
+        self.assertEqual(c.lock_kind("no-such-thread", "running"), "busy")
+
+    def test_desktop_owner_on_a_finished_turn_is_idle(self):
+        with mock.patch.object(c, "lock_owner",
+                               return_value={"pid": 1, "command": "/Applications/ChatGPT.app/x/codex",
+                                             "desktop": True}):
+            self.assertEqual(c.lock_kind("t", "done"), "idle")
+            self.assertEqual(c.lock_kind("t", "stopped"), "idle")
+
+    def test_desktop_owner_on_a_running_turn_is_still_busy(self):
+        with mock.patch.object(c, "lock_owner",
+                               return_value={"pid": 1, "command": "/Applications/ChatGPT.app/x/codex",
+                                             "desktop": True}):
+            self.assertEqual(c.lock_kind("t", "running"), "busy")
+
+    def test_unknown_owner_does_not_promise_anything(self):
+        # 查不到持有者时不能告诉用户「关掉就能发」，那可能是假的。
+        with mock.patch.object(c, "lock_owner", return_value=None):
+            self.assertEqual(c.lock_kind("t", "done"), "unknown")
+
+    def test_non_desktop_owner_is_not_called_idle(self):
+        with mock.patch.object(c, "lock_owner",
+                               return_value={"pid": 1, "command": "/usr/local/bin/codex",
+                                             "desktop": False}):
+            self.assertEqual(c.lock_kind("t", "done"), "busy")
+
+    def test_lock_owner_matches_the_desktop_app_path(self):
+        self.assertTrue(c.DESKTOP_OWNER.search(
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"))
+        self.assertTrue(c.DESKTOP_OWNER.search("/Applications/Codex.app/Contents/MacOS/codex"))
+        self.assertFalse(c.DESKTOP_OWNER.search("/usr/local/bin/codex"))
+        self.assertFalse(c.DESKTOP_OWNER.search("/opt/homebrew/bin/codex"))
+
+
 class TestImages(TempDbs):
     """用户贴的图以前被整段丢掉，只剩一段 # Files mentioned by the user 的壳。"""
 

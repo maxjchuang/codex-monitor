@@ -80,7 +80,9 @@ window.__ModuleLoader__.load({
       'reply.sent': '已提交给 Codex，稍后会处理。',
       'reply.failed': '投递失败：{error}',
       'reply.busy': '这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。',
-      'reply.locked': 'Codex 正开着这个会话，暂时不能投递。在 Codex 里切到别的会话或关掉它，这里会自动恢复。',
+      'reply.lockedBusy': 'Codex 正在跑这个会话，这会儿插不进去。等这一轮结束就能发，这里会自动恢复。',
+      'reply.lockedIdle': 'Codex 桌面端开着这个会话，一直占着不放。关掉 Codex 桌面端（或在里面结束这个会话）就能发。',
+      'reply.lockedUnknown': '这个会话被另一个进程占着，暂时不能投递。关掉占用它的程序后这里会自动恢复。',
       'chat.imageAlt': '用户附的图 {n}',
       'reply.note': '追加为新的一轮，不打断正在跑的任务。⌘↵ 发送。',
       'reply.options': 'Codex 给出的选项（点击填入，需你自己发送）：',
@@ -144,7 +146,9 @@ window.__ModuleLoader__.load({
       'reply.sent': 'Submitted to Codex; it will pick this up shortly.',
       'reply.failed': 'Could not deliver: {error}',
       'reply.busy': 'Codex is holding this session open. Switch to another session in Codex, or close it, then send again.',
-      'reply.locked': 'Codex has this session open, so it cannot take a message right now. Switch away from it or close it in Codex and this will clear on its own.',
+      'reply.lockedBusy': 'Codex is running this session right now, so a message cannot be inserted. It will clear once this turn ends.',
+      'reply.lockedIdle': 'The Codex desktop app has this session open and holds it even while idle. Close the Codex desktop app (or end the session there) to send.',
+      'reply.lockedUnknown': 'Another process holds this session, so it cannot take a message right now. This clears once that program lets go.',
       'chat.imageAlt': 'Attached image {n}',
       'reply.note': 'Appends a new turn; does not interrupt work already running. ⌘↵ sends.',
       'reply.options': 'Options Codex offered (click to fill in, you still send):',
@@ -499,6 +503,10 @@ window.__ModuleLoader__.load({
 /* 圆点要落在第一行文字的中间，不然会贴着顶边。 */
 .cxm-locked-dot{flex:none;width:6px;height:6px;border-radius:999px;margin-top:9px;
   background:var(--dsw-alias-state-warn-primary)}
+/* 「只是开着」不是异常，是用户可以去关掉的一个动作，用信息色而不是警告色；
+   正在跑才是真的只能等。 */
+.cxm-locked[data-reason='idle'] .cxm-locked-dot{background:var(--dsw-alias-state-business-primary)}
+.cxm-locked[data-reason='idle']{color:var(--dsw-alias-label-primary)}
 .cxm-composer[data-locked='true'] .cxm-textarea{opacity:.6;cursor:not-allowed}
 .cxm-composer[data-locked='true'] .cxm-send{opacity:.4;cursor:default}
 .cxm-opt:disabled{opacity:.5;cursor:not-allowed}
@@ -1251,7 +1259,12 @@ window.__ModuleLoader__.load({
     }
 
     /** The composer: appends a turn; never answers on the user's behalf. */
-    function Composer({ t, threadId, questions, onSent, locked = false }) {
+    function Composer({ t, threadId, questions, onSent, locked = false, lockedBy = null }) {
+      // 锁住的原因不一样，用户该做的事也不一样：正在跑只能等，只是开着可以去关掉。
+      const lockedText =
+        lockedBy === 'busy' ? t('reply.lockedBusy')
+          : lockedBy === 'idle' ? t('reply.lockedIdle')
+            : t('reply.lockedUnknown')
       const [draft, setDraft] = useState('')
       const [busy, setBusy] = useState(false)
       const [note, setNote] = useState(null)
@@ -1328,9 +1341,9 @@ window.__ModuleLoader__.load({
           locked && draft.length === 0
             ? h(
                 'div',
-                { className: 'cxm-locked', role: 'status' },
+                { className: 'cxm-locked', role: 'status', 'data-reason': lockedBy || 'unknown' },
                 h('span', { className: 'cxm-locked-dot', 'aria-hidden': 'true' }),
-                t('reply.locked'),
+                lockedText,
               )
             : h('textarea', {
             className: 'cxm-textarea',
@@ -1749,7 +1762,14 @@ window.__ModuleLoader__.load({
                     entries.map((entry, index) => h(Entry, { key: index, t, entry })),
                   ),
         ),
-        h(Composer, { t, threadId: session.id, questions, onSent, locked: detail?.locked === true }),
+        h(Composer, {
+          t,
+          threadId: session.id,
+          questions,
+          onSent,
+          locked: detail?.locked === true,
+          lockedBy: detail?.lockedBy ?? null,
+        }),
       )
     }
 

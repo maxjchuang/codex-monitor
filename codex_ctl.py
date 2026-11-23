@@ -1064,6 +1064,39 @@ def thread_locked(thread_id):
         return False
 
 
+DESKTOP_OWNER = re.compile(r"/(?:ChatGPT|Codex)\.app/Contents/.+/codex$", re.I)
+
+
+def lock_owner(thread_id):
+    """谁占着这个会话的锁。
+
+    光知道「被占着」不够：Codex 桌面端只要打开过某个会话就一直占着不放，
+    哪怕它已经闲着几小时。这种情况下关掉桌面端就能发，而正在跑的时候只能等。
+    用 lsof 拿到 pid 再看进程路径，才分得清是哪一种。
+    """
+    path = os.path.join(LOCK_DIR, f"{thread_id}.lock")
+    if not os.path.exists(path):
+        return None
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/lsof", "-nP", "-t", "--", path],
+            capture_output=True, text=True, timeout=2.0,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    pid = out.split()[0] if out else ""
+    if not pid.isdigit():
+        return None
+    try:
+        command = subprocess.run(
+            ["/bin/ps", "-p", pid, "-o", "comm="],
+            capture_output=True, text=True, timeout=2.0,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return {"pid": int(pid), "command": "", "desktop": False}
+    return {"pid": int(pid), "command": command, "desktop": bool(DESKTOP_OWNER.search(command))}
+
+
 WRITER_BUSY = "already has an active writer"
 
 
@@ -1193,6 +1226,23 @@ def build_list(srv, limit=12, order="recent"):
     }
 
 
+def lock_kind(thread_id, state):
+    """把「被锁住」分成用户能据以行动的两类。
+
+    busy   —— 那一轮还在跑，谁都插不进去，只能等它结束。
+    idle   —— 桌面端只是把这个会话开着（可能开了一整天），关掉就能发。
+    unknown—— 锁在，但查不到持有者，别乱承诺。
+    """
+    if state == "running":
+        return "busy"
+    owner = lock_owner(thread_id)
+    if owner is None:
+        return "unknown"
+    if owner["desktop"]:
+        return "idle" if state in ("done", "stopped", "failed") else "busy"
+    return "busy"
+
+
 def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
     """单个会话的详情：轮次、提问、最近动作、聊天记录。"""
     meta = next((t for t in latest_threads(500) if t["id"] == thread_id), {"id": thread_id})
@@ -1225,7 +1275,9 @@ def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
         "transcriptTruncated": chat["truncated"],
         "transcriptHasMore": chat["hasMore"],
         # 被别的进程（通常是 Codex 桌面端）占着时不能投递，UI 据此禁用输入框。
+        # lockedBy 让 UI 能说清是「正在跑，只能等」还是「只是开着，关掉就能发」。
         "locked": thread_locked(thread_id),
+        "lockedBy": lock_kind(thread_id, kind) if thread_locked(thread_id) else None,
         "transcriptBefore": chat["before"],
         "items": [
             {"type": it["type"], "at": it["at"],
