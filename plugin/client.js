@@ -240,8 +240,10 @@ window.__ModuleLoader__.load({
 .cxm-chat-top{flex:none;display:flex;align-items:center;gap:8px;
   padding:calc(16px + var(--dsh-frame-top-clearance,0px)) 24px 0}
 .cxm-list-head{padding:calc(20px + var(--dsh-frame-top-clearance,0px)) 14px 10px}
+/* DSH 的侧栏标题行是 flex-start + gap，动作紧跟在标题后面，
+   不是撑到最右边（space-between）。标题短的时候那样会空出一大片。 */
 .cxm-list-title{margin:0;font-size:14px;font-weight:500;display:flex;align-items:center;
-  gap:8px;justify-content:space-between}
+  gap:6px;justify-content:flex-start}
 .cxm-list-counts{color:var(--dsw-alias-label-tertiary);font-size:12px;margin-top:4px;
   line-height:20px}
 .cxm-list-body{flex:1;min-height:0;overflow:auto;padding:0 8px 16px;display:flex;
@@ -473,6 +475,23 @@ window.__ModuleLoader__.load({
 .cxm-btn[data-primary='true']{background:var(--dsw-alias-button-primary-fill);
   color:var(--dsw-alias-label-primary-foreground);border-color:transparent}
 .cxm-btn:disabled{opacity:.4;cursor:default}
+/* 图标按钮：照 DSH 的 iconButton。默认 28px（列表头那种），data-size=sm 是 24px
+   （列表标题栏那种）。都是无边框、透明底、hover 才出浅底。 */
+.cxm-icon-btn{display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;padding:0;flex:none;
+  border:0;background:none;border-radius:var(--dsw-radius-sm);
+  color:var(--dsw-alias-label-secondary);cursor:pointer;
+  transition:background-color .1s,color .1s}
+.cxm-icon-btn[data-size='sm']{width:24px;height:24px;
+  border-radius:var(--dsw-radius-xs);color:var(--dsw-alias-label-tertiary)}
+.cxm-icon-btn:disabled{opacity:.4;cursor:default}
+.cxm-icon-btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset:-2px}
+@media (hover:hover){
+  .cxm-icon-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+  .cxm-icon-btn[data-size='sm']:hover:not(:disabled){
+    background:none;color:var(--dsw-alias-label-primary)}
+}
 /* 发送键：照抄 DSH 的 InputBar 主按钮（.uV2eYG_primary），不是带文字的胶囊。
    它是一个 34x34 的正圆图标按钮，DeepSeek 蓝底、白色上箭头，靠 translateY(-2px)
    和输入区基线对齐。禁用只降透明度，形状不变，避免点击时按钮跳动。 */
@@ -686,6 +705,53 @@ window.__ModuleLoader__.load({
           d: 'M4.5 2.5 8 6l-3.5 3.5',
           stroke: 'currentColor',
           'stroke-width': 1.4,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+        }),
+      )
+    }
+
+    /**
+     * 刷新图标：一个环形箭头。DSH 的图标都是 16×16、strokeWidth 1 的描边风格，
+     * 这里保持一致，不要用实心填充。
+     */
+    function RefreshGlyph() {
+      return h(
+        'svg',
+        {
+          width: 16,
+          height: 16,
+          viewBox: '0 0 16 16',
+          fill: 'none',
+          'aria-hidden': 'true',
+          focusable: 'false',
+        },
+        // Feather 的 refresh-cw：两段弧加两个箭头，方向感最清楚。
+        h('path', {
+          d: 'M14 8a6 6 0 0 1-10.2 4.3L2 10.5',
+          stroke: 'currentColor',
+          'stroke-width': 1.3,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+        }),
+        h('path', {
+          d: 'M2 14v-3.5h3.5',
+          stroke: 'currentColor',
+          'stroke-width': 1.3,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+        }),
+        h('path', {
+          d: 'M2 8a6 6 0 0 1 10.2-4.3L14 5.5',
+          stroke: 'currentColor',
+          'stroke-width': 1.3,
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round',
+        }),
+        h('path', {
+          d: 'M14 2v3.5h-3.5',
+          stroke: 'currentColor',
+          'stroke-width': 1.3,
           'stroke-linecap': 'round',
           'stroke-linejoin': 'round',
         }),
@@ -1347,8 +1413,14 @@ window.__ModuleLoader__.load({
             h(StateChip, { t, state: session.state }),
             h(
               'button',
-              { type: 'button', className: 'cxm-btn', onClick: onRetry },
-              t('page.refresh'),
+              {
+                type: 'button',
+                className: 'cxm-icon-btn',
+                'aria-label': t('page.refresh'),
+                title: t('page.refresh'),
+                onClick: onRetry,
+              },
+              h(RefreshGlyph),
             ),
           ),
         ),
@@ -1591,11 +1663,14 @@ window.__ModuleLoader__.load({
                 'button',
                 {
                   type: 'button',
-                  className: 'cxm-btn',
+                  className: 'cxm-icon-btn',
+                  'data-size': 'sm',
+                  'aria-label': t('page.refresh'),
+                  title: t('page.refresh'),
                   onClick: refresh,
                   disabled: snapshot.phase === 'loading',
                 },
-                t('page.refresh'),
+                h(RefreshGlyph),
               ),
             ),
             h(

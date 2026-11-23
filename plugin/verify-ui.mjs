@@ -353,6 +353,7 @@ const checks = [
   ['auto-selected the top session', calls.some((u) => u.includes('status'))],
   ['transcript: user message rendered', joined.includes('帮我修一下 GridView 的空行')],
   // 中间过程默认收起，正文里不该出现里面的内容，但「用时」那一行要在。
+  ['refresh is an icon button, not text', refresh_is_icon_button()],
   ['work block: elapsed line shown', joined.includes('用时') && joined.includes('6 分钟')],
   ['work block: collapsed by default', !joined.includes('我先看一下') && !joined.includes('执行命令')],
   ['work block: click expands and collapses', work_expands()],
@@ -390,6 +391,24 @@ function toggle_hides_list() {
   btn.onClick()
   renderOnce()
   return listOpenAttr === 'false'
+}
+
+// ── refresh is an icon button ─────────────────────────────────────────────────
+// 刷新不该是文字按钮：要能靠 aria-label 被读屏找到，图标本身对读屏隐藏。
+function refresh_is_icon_button() {
+  const btns = allButtons.filter((b) => b.cls.includes('cxm-icon-btn'))
+  if (btns.length < 2) return false
+  return btns.every((b) => {
+    // 读屏靠 aria-label；按钮里不能有可见文字。
+    if (b.label !== '刷新') return false
+    const kids = (b.node.children || []).filter((c) => c && typeof c === 'object')
+    if (kids.length !== 1) return false
+    // 图标是函数组件（RefreshGlyph），渲染出来才是 svg。
+    const icon = kids[0]
+    if (typeof icon.type === 'function' && icon.type.name !== 'RefreshGlyph') return false
+    if (typeof icon.type !== 'function' && icon.type !== 'svg') return false
+    return (b.node.children || []).every((c) => typeof c !== 'string' || c.trim() === '')
+  })
 }
 
 // ── work block ────────────────────────────────────────────────────────────────

@@ -212,7 +212,7 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
 <div class="cxm-page" data-drawer="${drawer}">
   <div class="cxm-list-pane" data-open="${listOpen}">
     <div class="cxm-list-head">
-      <h1 class="cxm-list-title"><span>会话</span><button class="cxm-btn">刷新</button></h1>
+      <h1 class="cxm-list-title"><span>会话</span><button class="cxm-icon-btn" data-size="sm" aria-label="刷新" title="刷新"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false"><path d="M14 8a6 6 0 0 1-10.2 4.3L2 10.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 14v-3.5h3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 8a6 6 0 0 1 10.2-4.3L14 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 2v3.5h-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button></h1>
       <div class="cxm-list-counts">6 个会话 · 2 正在跑 · 1 等你回复</div>
     </div>
     <div class="cxm-list-body">${rows}</div>
@@ -233,7 +233,7 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
       </div>
       <div class="cxm-chat-side">
         <span class="cxm-chip" data-tone="warn">等你回答</span>
-        <button class="cxm-btn">刷新</button>
+        <button class="cxm-icon-btn" aria-label="刷新" title="刷新"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false"><path d="M14 8a6 6 0 0 1-10.2 4.3L2 10.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 14v-3.5h3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 8a6 6 0 0 1 10.2-4.3L14 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 2v3.5h-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
       </div>
     </div>
     <div class="cxm-transcript">
