@@ -246,6 +246,9 @@ captured.factory((s) => { if (s === 'react') return React; throw new Error(s) })
 
 // ── render loop ───────────────────────────────────────────────────────────────
 const texts = []
+const classes = []
+const clickables = []
+let listOpenAttr = null
 function walk(node, at) {
   if (node === null || node === undefined || node === false) return
   if (Array.isArray(node)) { node.forEach((n, i) => walk(n, `${at}/${i}`)); return }
@@ -274,6 +277,14 @@ function walk(node, at) {
     walk(out, `${at}/${name}`)
     return
   }
+  const cls = node.props?.className
+  if (typeof cls === 'string' && cls) classes.push(cls)
+  if (typeof cls === 'string' && cls.includes('cxm-list-pane')) {
+    listOpenAttr = node.props['data-open']
+  }
+  if (typeof node.type === 'string' && node.type === 'button' && typeof node.props?.onClick === 'function') {
+    clickables.push({ cls: cls || '', label: node.props['aria-label'] || node.props.title || '', onClick: node.props.onClick })
+  }
   // A textarea's prompt is a prop, not a child; surface it as visible copy too.
   const ph = node.props?.placeholder ?? node.props?.['aria-label']
   if (typeof ph === 'string' && ph.trim()) texts.push(ph.trim())
@@ -284,6 +295,9 @@ function renderOnce() {
   dirty = false
   pendingEffects = []
   texts.length = 0
+  classes.length = 0
+  clickables.length = 0
+  listOpenAttr = null
   path = ''
   const page = regs.find((r) => r.o.name === 'main')
   walk(React.createElement(page.c), '')
@@ -334,7 +348,76 @@ const checks = [
   // 两边漂移就会出现「代码里有、界面显示原始 key」。
   ...dictParityChecks(),
   ['no raw locale keys leaked', !/(^|\| )(page|state|row|chat|reply|list|age)\./.test(joined)],
+  // 列表开合：默认展开，按钮能收起、能再展开，且收起后列表真的不渲染。
+  ['list pane starts open', classes.some((c) => c.includes('cxm-list-pane'))],
+  ['list pane marked open', listOpenAttr === 'true'],
+  ['toggle button present with label', clickables.some((b) => b.cls.includes('cxm-list-toggle'))],
+  ['toggling hides the list', toggle_hides_list()],
+  // 窄屏：列表默认收起（先让出对话），展开时压一层遮罩承接点击关闭。
+  ['narrow defaults the list closed', narrow_defaults_closed()],
+  ['narrow drawer renders a scrim', narrow_drawer_has_scrim()],
 ]
+// ── list collapse ─────────────────────────────────────────────────────────────
+function toggle_hides_list() {
+  if (listOpenAttr !== 'true') return false
+  const btn = clickables.find((b) => b.cls.includes('cxm-list-toggle'))
+  if (!btn) return false
+  btn.onClick()
+  renderOnce()
+  return listOpenAttr === 'false'
+}
+
+// ── narrow / drawer ───────────────────────────────────────────────────────────
+// 测试环境本来没有 matchMedia（按桌面处理）。这里临时装一个只回答窄屏的桩，
+// 重新挂一次页面，验证窄屏下的默认值与遮罩。
+function withNarrow(fn) {
+  const saved = globalThis.window?.matchMedia
+  globalThis.window = globalThis.window || {}
+  globalThis.window.matchMedia = (q) => ({
+    matches: q.includes('640'),
+    addEventListener() {}, removeEventListener() {},
+    addListener() {}, removeListener() {},
+  })
+  // 清空 hook 槽位才算真正重挂：否则 useState 会复用上一次的 narrow=false。
+  hookSlots.clear()
+  try {
+    return fn()
+  } finally {
+    if (saved === undefined) delete globalThis.window.matchMedia
+    else globalThis.window.matchMedia = saved
+  }
+}
+
+function remountAndRender() {
+  const page = regs.find((r) => r.o.name === 'main')
+  hookIndex = 0
+  path = ''
+  texts.length = 0
+  classes.length = 0
+  clickables.length = 0
+  listOpenAttr = null
+  walk(React.createElement(page.c, null), '')
+}
+
+function narrow_defaults_closed() {
+  return withNarrow(() => {
+    remountAndRender()
+    return listOpenAttr === 'false'
+  })
+}
+
+function narrow_drawer_has_scrim() {
+  return withNarrow(() => {
+    remountAndRender()
+    const toggle = clickables.find((b) => b.cls.includes('cxm-list-toggle'))
+    if (!toggle) return false
+    // 点击与随后这次渲染都必须在桩生效期间完成，否则 isNarrow() 又回到 false。
+    toggle.onClick()
+    renderOnce()
+    return listOpenAttr === 'true' && classes.some((c) => c.includes('cxm-scrim'))
+  })
+}
+
 let bad = 0
 for (const [name, ok] of checks) { console.log((ok ? 'PASS ' : 'FAIL ') + name); if (!ok) bad += 1 }
 console.log(`\n${checks.length - bad}/${checks.length} checks passed`)

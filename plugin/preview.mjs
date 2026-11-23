@@ -180,16 +180,25 @@ const agent1 = [
   '改完可以看 [Storybook 对照页](http://127.0.0.1:6211/grid-review/sheet-1.html)。',
 ].join('\n')
 
+const out = process.argv[2] ?? '/tmp/cxm-preview.png'
+// 变体：collapsed 看收起态，mobile 看窄屏覆盖式抽屉。默认是桌面展开态。
+const variant = process.argv[3] ?? 'default'
+const listOpen = variant === 'collapsed' || variant === 'mobile' ? 'false' : 'true'
+// Chrome headless 的 viewport 最小就是 500px，窗口设更小只会裁掉右边，
+// 截出来的图看着像溢出，其实页面本身没问题。
+const size = variant === 'mobile' ? '500,900' : '1200,760'
+const htmlPath = `/tmp/cxm-preview-${variant}.html`
+
 const html = `<!doctype html><meta charset="utf-8"><style>
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;font-family:-apple-system,"PingFang SC",system-ui,sans-serif}
 :root{${Object.entries(light).map(([k, v]) => `${k}:${v}`).join(';')}}
 ${css}
-body{background:var(--dsw-alias-bg-base)}
+body{margin:0;background:var(--dsw-alias-bg-base)}
 .cxm-page{height:100vh}
 </style>
 <div class="cxm-page">
-  <div class="cxm-list-pane">
+  <div class="cxm-list-pane" data-open="${listOpen}">
     <div class="cxm-list-head">
       <h1 class="cxm-list-title"><span>会话</span><button class="cxm-btn">刷新</button></h1>
       <div class="cxm-list-counts">6 个会话 · 2 正在跑 · 1 等你回复</div>
@@ -198,6 +207,13 @@ body{background:var(--dsw-alias-bg-base)}
   </div>
   <div class="cxm-chat-pane">
     <div class="cxm-chat-head">
+      <button class="cxm-list-toggle" aria-label="收起会话列表">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2" stroke="currentColor" stroke-width="1.3"/>
+          <path d="M6.25 2.75v10.5" stroke="currentColor" stroke-width="1.3"/>
+          <rect x="3.1" y="4.1" width="2.1" height="7.8" rx="0.9" fill="currentColor"/>
+        </svg>
+      </button>
       <div class="cxm-chat-titles">
         <h2 class="cxm-chat-name">修 GridView 空行</h2>
         <div class="cxm-chat-meta">base-ui · gpt-5-codex · 01a1f73c</div>
@@ -249,12 +265,10 @@ body{background:var(--dsw-alias-bg-base)}
   </div>
 </div>`
 
-const out = process.argv[2] ?? '/tmp/cxm-preview.png'
-const htmlPath = '/tmp/cxm-preview.html'
-writeFileSync(htmlPath, html)
+writeFileSync(htmlPath, html.replaceAll('${listOpen}', listOpen))
 execFileSync(
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  ['--headless', '--disable-gpu', `--screenshot=${out}`, '--window-size=1200,760',
+  ['--headless', '--disable-gpu', `--screenshot=${out}`, `--window-size=${size}`,
    '--hide-scrollbars', '--force-device-scale-factor=2', `file://${htmlPath}`],
   { stdio: 'ignore' },
 )

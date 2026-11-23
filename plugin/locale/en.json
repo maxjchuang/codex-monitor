@@ -49,7 +49,9 @@
     "groupRunning": "{n} running",
     "showMore": "Show {n} more",
     "title": "Sessions",
-    "empty": "No sessions yet"
+    "empty": "No sessions yet",
+    "show": "Show session list",
+    "hide": "Hide session list"
   },
   "chat": {
     "placeholderPick": "Pick a session on the left to see where it got to.",

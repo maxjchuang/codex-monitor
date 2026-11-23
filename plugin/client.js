@@ -31,6 +31,8 @@ window.__ModuleLoader__.load({
       'page.updated': '更新于 {time}',
       'list.title': '会话',
       'list.empty': '还没有会话',
+      'list.show': '展开会话列表',
+      'list.hide': '收起会话列表',
       'list.groupWaiting': '{n} 个等你回答',
       'list.groupRunning': '{n} 个正在跑',
       'list.showMore': '展开显示 {n} 个',
@@ -79,6 +81,8 @@ window.__ModuleLoader__.load({
       'page.updated': 'Updated {time}',
       'list.title': 'Sessions',
       'list.empty': 'No sessions yet',
+      'list.show': 'Show session list',
+      'list.hide': 'Hide session list',
       'list.groupWaiting': '{n} waiting',
       'list.groupRunning': '{n} running',
       'list.showMore': 'Show {n} more',
@@ -199,7 +203,23 @@ window.__ModuleLoader__.load({
    list reads as part of the host UI: 32px session rows, 34px project rows, a 16x20
    icon slot, 12px row padding, 6px icon-to-label gap, and 12px per nesting level. */
 .cxm-list-pane{flex:none;width:clamp(240px,30%,360px);display:flex;flex-direction:column;
-  min-height:0;border-right:1px solid var(--dsw-alias-border-l3)}
+  min-height:0;border-right:1px solid var(--dsw-alias-border-l3);
+  transition:width .18s var(--ds-ease-in-out)}
+/* 收起时列表整个让位给对话：不是折叠成窄条，因为窄条在手机上仍然占地方，
+   而且没有能表达会话内容的宽度。 */
+.cxm-list-pane[data-open='false']{display:none}
+
+/* 列表开合开关：在对话区标题栏左侧，收起后仍然能看见它，否则就找不回来了。 */
+.cxm-list-toggle{flex:none;display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;padding:0;border:0;border-radius:var(--dsw-radius-sm);
+  background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer}
+.cxm-list-toggle:hover{background:var(--dsw-alias-interactive-bg-hover);
+  color:var(--dsw-alias-label-primary)}
+.cxm-list-toggle:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset:-2px}
+/* 空态也要能开列表，所以标题栏独立于是否选中会话存在。 */
+.cxm-chat-top{flex:none;display:flex;align-items:center;gap:8px;
+  padding:calc(16px + var(--dsh-frame-top-clearance,0px)) 24px 0}
 .cxm-list-head{padding:calc(20px + var(--dsh-frame-top-clearance,0px)) 14px 10px}
 .cxm-list-title{margin:0;font-size:14px;font-weight:500;display:flex;align-items:center;
   gap:8px;justify-content:space-between}
@@ -273,7 +293,9 @@ window.__ModuleLoader__.load({
 .cxm-chat-pane{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0;
   background:var(--dsw-alias-bg-base)}
 .cxm-chat-head{flex:none;padding:calc(16px + var(--dsh-frame-top-clearance,0px)) 24px 12px;
-  display:flex;gap:12px;align-items:flex-start;justify-content:space-between}
+  display:flex;gap:10px;align-items:center;justify-content:space-between}
+/* 开合按钮和标题首行视觉对齐：标题 22px 行高，按钮 28px，用负外边距把它提上来。 */
+.cxm-chat-head > .cxm-list-toggle{margin-top:-2px}
 .cxm-chat-titles{min-width:0;flex:1}
 .cxm-chat-name{margin:0;font-size:15px;font-weight:500;line-height:22px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -420,6 +442,31 @@ window.__ModuleLoader__.load({
   background:var(--dsw-alias-state-success-primary)}
 .cxm-bad{color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:16px;
   overflow-wrap:anywhere}
+
+/* 窄屏 / 触屏：两栏并排会挤到不可用，改成列表覆盖在对话之上。
+   用 pointer:coarse 而不是固定像素宽度，和 DSH 自己的判断一致。 */
+@media (max-width: 640px) {
+  .cxm-page{position:relative}
+  .cxm-list-pane{position:absolute;inset:0 auto 0 0;z-index:2;
+    width:min(86vw,320px);background:var(--dsw-alias-bg-base);
+    box-shadow:0 0 0 1px var(--dsw-alias-border-l3), 8px 0 24px rgba(0,0,0,.12)}
+  /* 抽屉打开时压一层遮罩：点它就能关掉列表，不用非得找到开合按钮。 */
+  .cxm-scrim{position:absolute;inset:0;z-index:1;border:0;padding:0;
+    background:rgba(0,0,0,.28);cursor:pointer;display:block}
+  .cxm-chat-pane{overflow-x:hidden}
+  .cxm-transcript{padding-inline:14px}
+  .cxm-composer{padding-inline:14px}
+  .cxm-chat-head{padding-inline:14px}
+  .cxm-chat-top{padding-inline:14px}
+  /* 长代码行和表格在窄屏必须自己滚动，不能把整页撑宽。 */
+  .cxm-md-pre{max-width:100%}
+}
+@media (pointer:coarse) {
+  /* 触屏上 32px 的行高偏紧，抬到 40px 才够点。 */
+  .cxm-row{height:40px}
+  .cxm-group-head{height:40px}
+  .cxm-list-toggle{width:36px;height:36px}
+}
 
 /* shared states */
 .cxm-blank{flex:1;display:flex;flex-direction:column;align-items:center;
@@ -1006,6 +1053,40 @@ window.__ModuleLoader__.load({
       )
     }
 
+    /** 列表开合开关。图标是两栏示意：左栏实心代表「显示列表」。 */
+    function ListToggle({ t, listOpen, onToggle }) {
+      const label = listOpen ? t('list.hide') : t('list.show')
+      return h(
+        'button',
+        {
+          type: 'button',
+          className: 'cxm-list-toggle',
+          onClick: onToggle,
+          title: label,
+          'aria-label': label,
+          'aria-expanded': listOpen ? 'true' : 'false',
+        },
+        h(
+          'svg',
+          { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+          h('rect', {
+            x: 1.75,
+            y: 2.75,
+            width: 12.5,
+            height: 10.5,
+            rx: 2,
+            stroke: 'currentColor',
+            'stroke-width': 1.3,
+          }),
+          h('path', { d: 'M6.25 2.75v10.5', stroke: 'currentColor', 'stroke-width': 1.3 }),
+          // 左栏填实表示列表可见；收起时只留下空栏，图标自己说明状态。
+          listOpen
+            ? h('rect', { x: 3.1, y: 4.1, width: 2.1, height: 7.8, rx: 0.9, fill: 'currentColor' })
+            : null,
+        ),
+      )
+    }
+
     /** One transcript entry: a message bubble, or a collapsed action line. */
     function Entry({ t, entry }) {
       if (entry.role === 'action') {
@@ -1054,7 +1135,7 @@ window.__ModuleLoader__.load({
     }
 
     /** The right pane: header, scrolling transcript, composer. */
-    function Conversation({ t, session, detail, error, onRetry, onSent }) {
+    function Conversation({ t, listOpen, onToggleList, session, detail, error, onRetry, onSent }) {
       const scroller = useRef(null)
       const stick = useRef(true)
       const entries = detail?.transcript ?? []
@@ -1083,6 +1164,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'cxm-chat-head' },
+          h(ListToggle, { t, listOpen, onToggle: onToggleList }),
           h(
             'div',
             { className: 'cxm-chat-titles' },
@@ -1140,6 +1222,12 @@ window.__ModuleLoader__.load({
     }
 
     // ── page ────────────────────────────────────────────────────────────────
+    /** 窄屏判定。SSR/测试环境没有 matchMedia 时按桌面处理。 */
+    function isNarrow() {
+      if (typeof window === 'undefined' || !window.matchMedia) return false
+      return window.matchMedia('(max-width: 640px)').matches
+    }
+
     function MonitorPage() {
       const t = React.useContext(TranslationContext)
       const snapshot = useSnapshot()
@@ -1148,6 +1236,25 @@ window.__ModuleLoader__.load({
       const [collapsed, setCollapsed] = useState({})
       // Projects whose full session list was expanded past the default cap.
       const [expanded, setExpanded] = useState({})
+      // 窄屏判定：用 matchMedia 而不是读一次 innerWidth，这样旋转屏幕或拖动窗口
+      // 改变宽度时能跟着变，而不是停在挂载那一刻的结论上。
+      const [narrow, setNarrow] = useState(() => isNarrow())
+      // 列表是否展开。窄屏默认收起，先把对话让出来；桌面默认展开。
+      const [listOpen, setListOpen] = useState(() => !isNarrow())
+
+      useEffect(() => {
+        if (typeof window === 'undefined' || !window.matchMedia) return undefined
+        const mq = window.matchMedia('(max-width: 640px)')
+        const sync = () => setNarrow(mq.matches)
+        sync()
+        // Safari 老版本只有 addListener，两个都挂上，缺哪个用另一个。
+        if (mq.addEventListener) {
+          mq.addEventListener('change', sync)
+          return () => mq.removeEventListener('change', sync)
+        }
+        mq.addListener(sync)
+        return () => mq.removeListener(sync)
+      }, [])
       const [detail, setDetail] = useState(null)
       const [detailError, setDetailError] = useState(null)
 
@@ -1223,6 +1330,8 @@ window.__ModuleLoader__.load({
           setSelectedId(id)
           setDetail(null)
           setDetailError(null)
+          // 窄屏上列表是覆盖层，选完就该让开，否则一直挡住对话。
+          if (isNarrow()) setListOpen(false)
         }
         const groups = groupSessions(sessions)
         // A single project needs no heading; the grouping only earns its keep once
@@ -1279,9 +1388,18 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: 'cxm-page' },
+        // 窄屏上列表是覆盖层，需要一层遮罩来承接「点空白处关闭」。
+        listOpen && narrow
+          ? h('button', {
+              type: 'button',
+              className: 'cxm-scrim',
+              'aria-label': t('list.hide'),
+              onClick: () => setListOpen(false),
+            })
+          : null,
         h(
           'div',
-          { className: 'cxm-list-pane' },
+          { className: 'cxm-list-pane', 'data-open': listOpen ? 'true' : 'false' },
           h(
             'div',
             { className: 'cxm-list-head' },
@@ -1317,6 +1435,8 @@ window.__ModuleLoader__.load({
         selected
           ? h(Conversation, {
               t,
+              listOpen,
+              onToggleList: () => setListOpen((v) => !v),
               session: selected,
               detail: detail !== null && detail.id === selected.id ? detail : null,
               error: detailError,
@@ -1326,6 +1446,11 @@ window.__ModuleLoader__.load({
           : h(
               'div',
               { className: 'cxm-chat-pane' },
+              h(
+                'div',
+                { className: 'cxm-chat-top' },
+                h(ListToggle, { t, listOpen, onToggle: () => setListOpen((v) => !v) }),
+              ),
               h(
                 'div',
                 { className: 'cxm-blank' },
