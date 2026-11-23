@@ -233,5 +233,42 @@ class TestDeliverReuse(TempDbs):
         self.assertEqual(fake.calls[:2], ["thread/resume", "turn/start"])
 
 
+class TranscriptTrimmingTest(unittest.TestCase):
+    """聊天窗口只取最近一段，且不能被成串的命令挤掉对话。"""
+
+    def test_short_run_is_left_alone(self):
+        entries = [
+            {"role": "action", "at": 1, "label": "执行命令", "text": "ls"},
+            {"role": "action", "at": 2, "label": "执行命令", "text": "pwd"},
+        ]
+        self.assertEqual(len(c.trim_transcript(entries, 50)), 2)
+
+    def test_long_run_collapses_into_one_line(self):
+        entries = [{"role": "action", "at": i, "label": "执行命令", "text": f"cmd{i}"} for i in range(9)]
+        out = c.trim_transcript(entries, 50)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["count"], 9)
+        self.assertEqual(out[0]["text"], "cmd0")
+        self.assertEqual(out[0]["lastText"], "cmd8")
+
+    def test_messages_survive_a_command_flood(self):
+        entries = []
+        for i in range(60):
+            entries.append({"role": "action", "at": i, "label": "执行命令", "text": f"cmd{i}"})
+            if i % 20 == 0:
+                entries.append({"role": "user", "at": i, "text": f"第 {i} 条消息"})
+        out = c.trim_transcript(entries, 200)
+        texts = [e["text"] for e in out if e["role"] == "user"]
+        self.assertEqual(len(texts), 3)
+
+    def test_trim_keeps_the_newest_entries(self):
+        entries = [{"role": "user", "at": i, "text": f"m{i}"} for i in range(30)]
+        out = c.trim_transcript(entries, 5)
+        self.assertEqual([e["text"] for e in out], ["m25", "m26", "m27", "m28", "m29"])
+
+    def test_empty_input_is_empty(self):
+        self.assertEqual(c.trim_transcript([], 10), [])
+
+
 if __name__ == "__main__":
     unittest.main()

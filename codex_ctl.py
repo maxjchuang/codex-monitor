@@ -111,6 +111,104 @@ def recent_items(thread_id, limit=8):
     return out
 
 
+def transcript(thread_id, limit=200, scan_limit=4000):
+    """按时间正序返回一段对话，供聊天窗口渲染。
+
+    只保留对“读起来像聊天”有意义的条目：用户说的话、Codex 说的话，以及被折叠成
+    一行的动作（跑命令、改文件等）。推理过程不入正文，避免把聊天窗口灌满。
+    """
+    conn = db(HIST_DB)
+    if not conn:
+        return {"entries": [], "truncated": False}
+    try:
+        # A busy session can be thousands of rows of mostly commands and reasoning.
+        # Scanning a wider window (then trimming to `limit` below) keeps the actual
+        # conversation from being crowded out by tool chatter.
+        rows = conn.execute(
+            "select item_type, created_at_ms, item_json from thread_items "
+            "where thread_id=? order by created_at_ms desc limit ?",
+            (thread_id, max(1, scan_limit)),
+        ).fetchall()
+    except sqlite3.Error:
+        return {"entries": [], "truncated": False}
+    finally:
+        conn.close()
+
+    out = []
+    truncated = len(rows) > max(1, limit)
+    for r in reversed(rows):
+        try:
+            payload = json.loads(r["item_json"])
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        kind = r["item_type"]
+        at = r["created_at_ms"] / 1000
+        if kind == "userMessage":
+            text = " ".join(
+                c.get("text", "") for c in payload.get("content") or [] if c.get("type") == "text"
+            ).strip()
+            if text:
+                out.append({"role": "user", "at": at, "text": text})
+            continue
+        if kind == "agentMessage":
+            text = (payload.get("text") or "").strip()
+            if text:
+                out.append({
+                    "role": "agent",
+                    "at": at,
+                    "text": text,
+                    "final": payload.get("phase") == "final_answer",
+                    "questions": payload.get("questions") or None,
+                })
+            continue
+        if kind == "reasoning":
+            continue
+        label, detail = describe_item({"type": kind, "data": payload})
+        out.append({"role": "action", "at": at, "label": label, "text": clip(detail, 240)})
+
+    return {"entries": trim_transcript(out, limit), "truncated": truncated}
+
+
+def trim_transcript(entries, limit):
+    """保留最近 limit 条，并把成串的同类动作压成一行。
+
+    聊天窗口里连续几十条命令既读不下去也挤掉了对话本身，所以连续的同类动作
+    只留第一条和总数。
+    """
+    if not entries:
+        return []
+    kept = entries[-limit:] if limit and len(entries) > limit else entries
+    out = []
+    run = []
+    for entry in kept:
+        if entry["role"] == "action":
+            run.append(entry)
+            continue
+        if run:
+            out.extend(collapse_run(run))
+            run = []
+        out.append(entry)
+    if run:
+        out.extend(collapse_run(run))
+    return out
+
+
+def collapse_run(run):
+    # A couple of consecutive commands still read fine as-is; only a long burst is
+    # worth collapsing, and collapsing it must not silently drop information.
+    if len(run) <= 2:
+        return list(run)
+    return [{
+        "role": "action",
+        "at": run[-1]["at"],
+        "label": run[0]["label"],
+        "text": clip(run[0]["text"], 160),
+        "count": len(run),
+        "lastLabel": run[-1]["label"],
+        "lastText": clip(run[-1]["text"], 160),
+    }]
+
+
 def last_activity_at(thread_id):
     """该会话最新一条动作的时间（毫秒）。桌面版边跑边写，是最可靠的心跳。"""
     conn = db(HIST_DB)
@@ -450,12 +548,13 @@ def build_list(srv, limit=12):
     }
 
 
-def build_status(srv, thread_id, items_limit=8):
-    """单个会话的详情：轮次、提问、最近动作。"""
+def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
+    """单个会话的详情：轮次、提问、最近动作、聊天记录。"""
     meta = next((t for t in latest_threads(500) if t["id"] == thread_id), {"id": thread_id})
     turn, questions = live_turn(srv, thread_id, items_limit=3)
     kind, age = live_state(thread_id, turn, questions)
     items = recent_items(thread_id, items_limit)
+    chat = transcript(thread_id, transcript_limit)
     return {
         "id": thread_id,
         "cwd": meta.get("cwd"),
@@ -471,6 +570,8 @@ def build_status(srv, thread_id, items_limit=8):
             "durationMs": (turn or {}).get("durationMs"),
         } if turn else None,
         "questions": questions or [],
+        "transcript": chat["entries"],
+        "transcriptTruncated": chat["truncated"],
         "items": [
             {"type": it["type"], "at": it["at"],
              "label": describe_item(it)[0], "detail": clip(describe_item(it)[1], 300)}
@@ -687,7 +788,11 @@ def serve(port=0, host="127.0.0.1"):
                     return
                 try:
                     with srv_lock:
-                        self._json({"ok": True, "data": build_status(app_server(), tid, int(payload.get("items") or 8))})
+                        self._json({"ok": True, "data": build_status(
+                            app_server(), tid,
+                            int(payload.get("items") or 8),
+                            int(payload.get("transcript") or 200),
+                        )})
                 except Exception as exc:
                     reset_app_server()
                     self._json({"ok": False, "error": str(exc)}, 500)
