@@ -80,8 +80,9 @@ window.__ModuleLoader__.load({
       'reply.sent': '已提交给 Codex，稍后会处理。',
       'reply.failed': '投递失败：{error}',
       'reply.busy': '这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。',
-      'reply.lockedBusy': 'Codex 正在跑这个会话，这会儿插不进去。等这一轮结束就能发，这里会自动恢复。',
-      'reply.lockedIdle': 'Codex 桌面端开着这个会话，一直占着不放。关掉 Codex 桌面端（或在里面结束这个会话）就能发。',
+      'reply.queued': '已排队。这个会话正被占着，等它释放后会自动投递，不用你再来点一次。',
+      'reply.lockedBusy': 'Codex 正在跑这个会话，这会儿插不进去。你可以先写下来，点发送会排队，这一轮结束自动投递。',
+      'reply.lockedIdle': 'Codex 桌面端开着这个会话，一直占着不放。现在发会排队；关掉 Codex 桌面端就立刻投递。',
       'reply.lockedUnknown': '这个会话被另一个进程占着，暂时不能投递。关掉占用它的程序后这里会自动恢复。',
       'chat.imageAlt': '用户附的图 {n}',
       'reply.note': '追加为新的一轮，不打断正在跑的任务。⌘↵ 发送。',
@@ -146,8 +147,9 @@ window.__ModuleLoader__.load({
       'reply.sent': 'Submitted to Codex; it will pick this up shortly.',
       'reply.failed': 'Could not deliver: {error}',
       'reply.busy': 'Codex is holding this session open. Switch to another session in Codex, or close it, then send again.',
-      'reply.lockedBusy': 'Codex is running this session right now, so a message cannot be inserted. It will clear once this turn ends.',
-      'reply.lockedIdle': 'The Codex desktop app has this session open and holds it even while idle. Close the Codex desktop app (or end the session there) to send.',
+      'reply.queued': 'Queued. This session is held right now; it will be delivered automatically once released, with no need to send again.',
+      'reply.lockedBusy': 'Codex is running this session right now, so nothing can be inserted. You can still write and send: it will be queued and delivered when this turn ends.',
+      'reply.lockedIdle': 'The Codex desktop app holds this session even while idle. Sending now will queue; closing the desktop app delivers it right away.',
       'reply.lockedUnknown': 'Another process holds this session, so it cannot take a message right now. This clears once that program lets go.',
       'chat.imageAlt': 'Attached image {n}',
       'reply.note': 'Appends a new turn; does not interrupt work already running. ⌘↵ sends.',
@@ -493,22 +495,19 @@ window.__ModuleLoader__.load({
    内部纵向排「文本区 + 底部按钮行」。之前把按钮和 textarea 并排放在描边盒子里，
    和 DSH 的结构不一样。 */
 /* 锁定提示：一条安静的说明，不要做成报错的样子 —— 这不是错误。 */
-/* 锁住的提示占据输入框的位置：内边距和字号都照抄 .cxm-textarea，
-   这样提示文字和平时打字的起点完全对齐，切换时不会跳一下。 */
+/* 锁住时的说明：消息可以排队，所以输入框留着，这行只是把情况讲清楚。
+   内边距和 .cxm-textarea 一致，说明文字和下面的输入起点对齐。 */
 .cxm-locked{display:flex;align-items:flex-start;gap:6px;box-sizing:border-box;
-  min-height:36px;padding:4px 8px 0 14px;
-  font-family:inherit;font-size:var(--dsh-content-font-size,14px);
-  line-height:calc(24px + var(--dsh-content-font-delta,0px));
-  color:var(--dsw-alias-label-secondary);cursor:not-allowed}
+  padding:2px 8px 0 14px;
+  font-family:inherit;font-size:13px;line-height:20px;
+  color:var(--dsw-alias-label-secondary)}
 /* 圆点要落在第一行文字的中间，不然会贴着顶边。 */
-.cxm-locked-dot{flex:none;width:6px;height:6px;border-radius:999px;margin-top:9px;
+.cxm-locked-dot{flex:none;width:6px;height:6px;border-radius:999px;margin-top:7px;
   background:var(--dsw-alias-state-warn-primary)}
 /* 「只是开着」不是异常，是用户可以去关掉的一个动作，用信息色而不是警告色；
    正在跑才是真的只能等。 */
 .cxm-locked[data-reason='idle'] .cxm-locked-dot{background:var(--dsw-alias-state-business-primary)}
 .cxm-locked[data-reason='idle']{color:var(--dsw-alias-label-primary)}
-.cxm-composer[data-locked='true'] .cxm-textarea{opacity:.6;cursor:not-allowed}
-.cxm-composer[data-locked='true'] .cxm-send{opacity:.4;cursor:default}
 .cxm-opt:disabled{opacity:.5;cursor:not-allowed}
 /* 用户附的图：和 DSH 的附件缩略图同尺寸（64×64，radius-xl），点开看大图。
    一张 2MB 的截图直接铺满气泡会把整段对话压垮，缩略图更接近桌面端的做法。 */
@@ -1281,13 +1280,16 @@ window.__ModuleLoader__.load({
 
       const submit = async () => {
         const message = draft.trim()
-        // 锁着的时候按钮本来就是禁用的，这里再挡一次，防止快捷键绕过。
-        if (!message || busy || locked) return
+        if (!message || busy) return
         setBusy(true)
         setNote(null)
         try {
-          await call('POST', 'codex-monitor/send', { threadId, message })
-          setNote({ ok: true, text: t('reply.sent') })
+          const result = await call('POST', 'codex-monitor/send', { threadId, message })
+          // 锁着时后端会入队而不是拒收，要如实告诉用户「还没发出去」。
+          setNote({
+            ok: true,
+            text: result?.queued ? t('reply.queued') : t('reply.sent'),
+          })
           setDraft('')
           setPicked(null)
           onSent?.()
@@ -1335,24 +1337,22 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'cxm-card' },
-          // 锁着的时候输入框本来也用不了，把原因直接写进这个位置，
-          // 省掉上面多出来的一行。但如果里面已经有草稿，就仍然把输入框留着，
-          // 否则锁一下就把人家打了一半的字弄丢了。
-          locked && draft.length === 0
+          // 锁着时不再挡住输入：消息会排队，锁一释放自动投出去。
+          // 但得先说清楚「现在发不出去」，否则用户会以为已经送到了。
+          locked
             ? h(
                 'div',
                 { className: 'cxm-locked', role: 'status', 'data-reason': lockedBy || 'unknown' },
                 h('span', { className: 'cxm-locked-dot', 'aria-hidden': 'true' }),
                 lockedText,
               )
-            : h('textarea', {
+            : null,
+          h('textarea', {
             className: 'cxm-textarea',
             rows: 1,   // 空时只占一行，和 DSH 的 min-height:36px 对应；不写会默认 2 行
             value: draft,
             placeholder: t('reply.placeholder'),
             'aria-label': t('reply.placeholder'),
-            disabled: locked,
-            'aria-disabled': locked ? 'true' : undefined,
             onChange: (event) => setDraft(event.target.value),
             onKeyDown: (event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -1372,7 +1372,7 @@ window.__ModuleLoader__.load({
               className: 'cxm-send',
               'aria-label': busy ? t('reply.sending') : t('reply.send'),
               title: busy ? t('reply.sending') : t('reply.send'),
-              disabled: busy || locked || draft.trim().length === 0,
+              disabled: busy || draft.trim().length === 0,
               onClick: submit,
             },
             // 图标和 DSH 一致：静止时是上箭头，发送中换成转圈。

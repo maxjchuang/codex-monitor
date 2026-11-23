@@ -513,6 +513,103 @@ class TestLockKind(TempDbs):
         self.assertFalse(c.DESKTOP_OWNER.search("/opt/homebrew/bin/codex"))
 
 
+class TestQueue(TempDbs):
+    """锁着的时候消息不能丢，也不能永远卡在队头。
+
+    桌面端会长期占着会话，用户关掉它之前消息应该排着，关掉后自己发出去。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.patch = mock.patch.multiple(
+            c, QUEUE_DIR=self.tmp.name,
+            QUEUE_FILE=os.path.join(self.tmp.name, "queue.json"),
+        )
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def test_add_and_remove(self):
+        entry = c.queue_add("t1", "hello")
+        self.assertEqual(len(c.queue_list("t1")), 1)
+        c.queue_remove(entry["id"])
+        self.assertEqual(c.queue_list("t1"), [])
+
+    def test_entries_are_scoped_by_thread(self):
+        c.queue_add("t1", "a")
+        c.queue_add("t2", "b")
+        self.assertEqual([i["message"] for i in c.queue_list("t1")], ["a"])
+        self.assertEqual(len(c.queue_list()), 2)
+
+    def test_corrupt_file_is_treated_as_empty(self):
+        # 半个 JSON 不该让整个队列罢工。
+        os.makedirs(c.QUEUE_DIR, exist_ok=True)
+        with open(c.QUEUE_FILE, "w") as handle:
+            handle.write("{not json")
+        self.assertEqual(c.queue_list(), [])
+        c.queue_add("t1", "x")
+        self.assertEqual(len(c.queue_list()), 1)
+
+    def test_locked_thread_stays_queued_without_counting_an_attempt(self):
+        """被占着不是失败：不能计入重试次数，否则等锁的时间里就被判死了。"""
+        entry = c.queue_add("t1", "wait for me")
+        with mock.patch.object(c, "thread_locked", return_value=True):
+            result = c.queue_drain()
+        self.assertEqual(result["waiting"], [entry["id"]])
+        self.assertEqual(result["failed"], [])
+        remaining = c.queue_list("t1")
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["attempts"], 0)
+
+    def test_permanent_error_drops_the_entry(self):
+        """子 agent 会话无法直接 resume，重试多少次都没用，不该占着队头。"""
+        c.queue_add("t1", "doomed")
+        with mock.patch.object(c, "thread_locked", return_value=False), \
+             mock.patch.object(c, "AppServer"), \
+             mock.patch.object(c, "push_turn", side_effect=RuntimeError(
+                 "cannot resume an unloaded multi-agent v2 sub-agent")):
+            result = c.queue_drain()
+        self.assertEqual(len(result["failed"]), 1)
+        self.assertEqual(c.queue_list("t1"), [])
+
+    def test_retryable_error_keeps_the_entry_until_the_cap(self):
+        c.queue_add("t1", "flaky")
+        boom = RuntimeError("something transient")
+        with mock.patch.object(c, "thread_locked", return_value=False), \
+             mock.patch.object(c, "AppServer"), \
+             mock.patch.object(c, "push_turn", side_effect=boom):
+            for _ in range(c.MAX_QUEUE_ATTEMPTS - 1):
+                c.queue_drain()
+            self.assertEqual(len(c.queue_list("t1")), 1)
+            c.queue_drain()   # 第 MAX_QUEUE_ATTEMPTS 次，放弃
+        self.assertEqual(c.queue_list("t1"), [])
+
+    def test_writer_busy_during_drain_does_not_count_as_failure(self):
+        c.queue_add("t1", "racing")
+        with mock.patch.object(c, "thread_locked", return_value=False), \
+             mock.patch.object(c, "AppServer"), \
+             mock.patch.object(c, "push_turn", side_effect=RuntimeError(c.WRITER_BUSY)):
+            result = c.queue_drain()
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(c.queue_list("t1")[0]["attempts"], 0)
+
+    def test_successful_delivery_clears_the_entry(self):
+        c.queue_add("t1", "ship it")
+        with mock.patch.object(c, "thread_locked", return_value=False), \
+             mock.patch.object(c, "AppServer"), \
+             mock.patch.object(c, "push_turn", return_value={}):
+            result = c.queue_drain()
+        self.assertEqual(len(result["delivered"]), 1)
+        self.assertEqual(c.queue_list("t1"), [])
+
+    def test_permanent_error_markers(self):
+        self.assertTrue(c.is_permanent_error(RuntimeError("thread not found: abc")))
+        self.assertTrue(c.is_permanent_error(RuntimeError("no rollout found")))
+        self.assertFalse(c.is_permanent_error(RuntimeError("connection reset")))
+        self.assertFalse(c.is_permanent_error(RuntimeError(c.WRITER_BUSY)))
+
+
 class TestImages(TempDbs):
     """用户贴的图以前被整段丢掉，只剩一段 # Files mentioned by the user 的壳。"""
 
