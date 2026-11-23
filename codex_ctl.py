@@ -110,11 +110,16 @@ def resolve_project(cwd, by_root):
         probe = parent
 
 
-def latest_threads(limit=20, include_archived=False):
+def latest_threads(limit=20, include_archived=False, order="recent"):
     """按最近活动取会话。
 
     标题取 threads.name（Codex 侧栏显示的就是它），没有 name 时才退回 title。
     项目名取 projects.name，按 cwd 反查 project_roots 得到。
+
+    include_archived=False 时排除已归档的会话：Codex 侧栏也不显示它们，
+    而且归档里大多是验收用的短会话，混进来会把真正在用的挤下去。
+    order 决定排序字段，"recent" 用 recency_at_ms（Codex 记的最近使用时间），
+    "updated" 用 updated_at_ms。
     """
     conn = db(STATE_DB)
     if not conn:
@@ -124,14 +129,19 @@ def latest_threads(limit=20, include_archived=False):
             # subagent 会话是子 agent 的内部线程，Codex 侧栏不把它们当作独立会话，
             # 所以这里排除，否则列表会被并行的子任务刷满。
             "select id, title, name, cwd, updated_at, model, tokens_used, "
-            "rollout_path, is_pinned, source, thread_source, preview "
+            "rollout_path, is_pinned, source, thread_source, preview, "
+            "recency_at_ms, archived, thread_section_id, section_position "
             "from threads "
             "where coalesce(thread_source, '') != 'subagent' "
             # 既没有 name 也没有首条消息的会话是空壳（有 turn 但没有任何 item），
             # Codex 侧栏也不显示，留着只会占位置。
             "  and (coalesce(name, '') != '' or coalesce(title, '') != '' "
             "       or coalesce(preview, '') != '') "
-            "order by updated_at desc limit ?",
+            + ("" if include_archived else "  and coalesce(archived, 0) = 0 ")
+            + ("order by coalesce(recency_at_ms, updated_at * 1000) desc "
+               if order == "recent"
+               else "order by updated_at desc ")
+            + "limit ?",
             (limit,),
         ).fetchall()
         out = [dict(r) for r in rows]
@@ -141,11 +151,34 @@ def latest_threads(limit=20, include_archived=False):
         conn.close()
 
     by_root = projects_by_root()
+    pinned_section = pinned_section_id()
     for row in out:
         proj_name, proj_pos = resolve_project(row.get("cwd"), by_root)
         row["projectName"] = proj_name
         row["projectPosition"] = proj_pos
+        # Codex 的「置顶」不是 is_pinned 标记，而是把会话放进名为 Pinned 的
+        # section 里，section_position 决定置顶区内的顺序。
+        row["pinned"] = bool(
+            pinned_section and row.get("thread_section_id") == pinned_section
+        )
+        row["pinnedPosition"] = row.get("section_position") if row["pinned"] else None
     return out
+
+
+def pinned_section_id():
+    """Codex 把置顶会话放进名为 Pinned 的 thread_sections 里。"""
+    conn = db(STATE_DB)
+    if not conn:
+        return None
+    try:
+        row = conn.execute(
+            "select id from thread_sections where lower(coalesce(name, '')) = 'pinned' limit 1"
+        ).fetchone()
+        return row["id"] if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
 
 
 def latest_turn(thread_id):
@@ -775,9 +808,13 @@ def deliver(thread_id, message, wait_sec, resume=True, srv=None, quiet=False):
 
 
 # ─────────────────────────── 数据（供 CLI 与 UI 共用）───────────────────────────
-def build_list(srv, limit=12):
-    """会话列表的结构化视图。UI 与 CLI 共用，避免两套判断逻辑漂移。"""
-    threads = latest_threads(limit)
+def build_list(srv, limit=12, order="recent"):
+    """会话列表的结构化视图。UI 与 CLI 共用，避免两套判断逻辑漂移。
+
+    order 只影响「非置顶」那部分：置顶会话永远单独成一组排在最前，
+    组内按 Codex 的 section_position 排。
+    """
+    threads = latest_threads(limit, order=order)
     # 每个会话都要问一次 app-server，串行做 N 个会话就是 N 次往返。
     # 并发发出去，总耗时从「N 倍单次」变成「一次往返」。
     rows = []
@@ -814,15 +851,27 @@ def build_list(srv, limit=12):
             or "(无标题)",
             "model": t.get("model"),
             "updatedAt": t.get("updated_at"),
+            # 排序要用 Codex 记的「最近使用时间」，它和 updated_at 略有差别。
+            "recencyAt": t.get("recency_at_ms"),
+            "pinned": bool(t.get("pinned")),
+            "pinnedPosition": t.get("pinnedPosition"),
             "state": kind,
             "activityAgeSec": None if age is None else int(age),
             "question": questions[0].get("title") if questions else None,
             "questions": questions or [],
             "lastAction": {"label": label, "detail": clip(detail, 200)} if items else None,
         })
-    # 等你回答的排最前，其余按最近活动倒序
-    order = {"waiting": 0, "running": 1, "failed": 2, "stopped": 3, "done": 4}
-    out.sort(key=lambda r: (order.get(r["state"], 9), -(r["updatedAt"] or 0)))
+    # 置顶的永远在最前，组内按 Codex 的 section_position。
+    # 其余按所选顺序（最近使用 / 最近更新），同一档里再按状态收一下。
+    state_rank = {"waiting": 0, "running": 1, "failed": 2, "stopped": 3, "done": 4}
+
+    def sort_key(r):
+        if r["pinned"]:
+            return (0, r["pinnedPosition"] or 0, 0)
+        stamp = r.get("recencyAt") or ((r.get("updatedAt") or 0) * 1000)
+        return (1, -stamp, state_rank.get(r["state"], 9))
+
+    out.sort(key=sort_key)
     return {
         "generatedAt": int(time.time() * 1000),
         "counts": {
@@ -1047,9 +1096,10 @@ def serve(port=0, host="127.0.0.1"):
             if path == "/codex-monitor/state":
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 limit = int((qs.get("limit") or ["12"])[0])
+                order = (qs.get("order") or ["recent"])[0]
                 try:
                     with srv_lock:
-                        self._json({"ok": True, "data": build_list(app_server(), limit)})
+                        self._json({"ok": True, "data": build_list(app_server(), limit, order)})
                 except Exception as exc:
                     reset_app_server()
                     self._json({"ok": False, "error": str(exc)}, 500)
@@ -1069,7 +1119,11 @@ def serve(port=0, host="127.0.0.1"):
             if path == "/codex-monitor/state":
                 try:
                     with srv_lock:
-                        self._json({"ok": True, "data": build_list(app_server(), int(payload.get("limit") or 12))})
+                        self._json({"ok": True, "data": build_list(
+                            app_server(),
+                            int(payload.get("limit") or 12),
+                            payload.get("order") or "recent",
+                        )})
                 except Exception as exc:
                     reset_app_server()
                     self._json({"ok": False, "error": str(exc)}, 500)

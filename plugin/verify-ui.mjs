@@ -126,10 +126,16 @@ const sessions = [
   { id: 'bbb', cwd: '/p/faster', project: 'faster', title: '讨论设计', model: 'm',
     updatedAt: 1795431100, state: 'running', activityAgeSec: 3, question: null, questions: [],
     lastAction: { label: '思考', detail: '推理中' } },
+  // 置顶会话：pinned 为 true，组内顺序由 pinnedPosition 决定。
+  // 它不该出现在下面的项目分组里。
+  { id: 'pin', cwd: '/p/pinned', project: 'pinned-proj', title: '置顶的会话', model: 'm',
+    updatedAt: 1795431000, state: 'done', activityAgeSec: 900, question: null, questions: [],
+    pinned: true, pinnedPosition: 1000000,
+    lastAction: { label: '完成', detail: '' } },
 ]
 const statePayload = {
   ok: true,
-  data: { generatedAt: 1795431243564, counts: { total: 2, running: 1, waiting: 1 }, sessions },
+  data: { generatedAt: 1795431243564, counts: { total: 3, running: 1, waiting: 1 }, sessions },
 }
 const statusPayload = {
   ok: true,
@@ -167,7 +173,7 @@ const dict = {
   'page.counts': '{total} 个会话 · {running} 正在跑 · {waiting} 等你回复',
   'page.updated': '更新于 {time}', 'page.empty': '没读到会话',
   'page.errorTitle': '读取失败', 'page.retry': '重试',
-  'list.title': '会话', 'list.empty': '还没有会话',
+  'list.title': '会话', 'list.pinned': '置顶', 'list.groupBy': '分组方式', 'list.byProject': '按项目', 'list.byRecent': '按最近', 'list.empty': '还没有会话',
   'list.groupWaiting': '{n} 个等你回答', 'list.groupRunning': '{n} 个正在跑',
   'list.showMore': '展开显示 {n} 个',
   'state.waiting': '等你回答', 'state.running': '正在跑', 'state.done': '已完成',
@@ -355,8 +361,15 @@ const checks = [
   ['styles injected into document.head (badge survives unmount)',
     headChildren.some((el) => el['data-plugin-css'] === 'codex-monitor' && el.textContent.includes('.cxm-page'))],
   ['left pane title translated', joined.includes('会话')],
-  ['counts interpolated', joined.includes('2 个会话 · 1 正在跑 · 1 等你回复')],
+  ['counts interpolated', joined.includes('3 个会话 · 1 正在跑 · 1 等你回复')],
   ['both sessions listed', joined.includes('修 GridView') && joined.includes('讨论设计')],
+  // 置顶会话单独成组，组头叫「置顶」。
+  ['pinned group has its own header', joined.includes('置顶')],
+  // 置顶的那个不该同时出现在下面的项目分组里。
+  ['pinned session is not duplicated in project groups',
+    (joined.match(/置顶的会话/g) || []).length === 1],
+  // 两种分组方式都要有入口。
+  ['both grouping modes offered', joined.includes('按项目') && joined.includes('按最近')],
   ['waiting question surfaced in list', joined.includes('是否删除空白子记录')],
   ['auto-selected the top session', calls.some((u) => u.includes('status'))],
   ['transcript: load-more control offered when more exists',

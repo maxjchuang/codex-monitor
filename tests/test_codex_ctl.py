@@ -39,11 +39,15 @@ class TempDbs(unittest.TestCase):
         conn.execute(
             "create table threads (id text, title text, cwd text, updated_at integer, "
             "model text, tokens_used integer, rollout_path text, name text, "
-            "is_pinned integer, source text, thread_source text, preview text)"
+            "is_pinned integer, source text, thread_source text, preview text, "
+            "recency_at_ms integer, archived integer, thread_section_id text, "
+            "section_position integer)"
         )
         # Codex 侧栏的项目名来自 projects.name，一个项目可以挂多个根目录。
         conn.execute("create table projects (id text, name text, position integer)")
         conn.execute("create table project_roots (project_id text, path text)")
+        # 置顶不是 is_pinned，而是会话被放进名为 Pinned 的 section。
+        conn.execute("create table thread_sections (id text, name text, appearance text)")
         conn.commit()
         conn.close()
 
@@ -53,6 +57,27 @@ class TempDbs(unittest.TestCase):
     def tearDown(self):
         c.HIST_DB, c.STATE_DB = self._old
         self.tmp.cleanup()
+
+    def add_thread(self, thread_id, name, updated_at=1000, recency_ms=None,
+                   archived=0, section=None, position=None, thread_source="user",
+                   cwd="/p/alpha"):
+        conn = sqlite3.connect(c.STATE_DB)
+        conn.execute(
+            "insert into threads (id, title, cwd, updated_at, model, tokens_used, "
+            "rollout_path, name, is_pinned, source, thread_source, preview, "
+            "recency_at_ms, archived, thread_section_id, section_position) "
+            "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (thread_id, name, cwd, updated_at, "m", 0, "", name, 0, "cli",
+             thread_source, "", recency_ms, archived, section, position),
+        )
+        conn.commit()
+        conn.close()
+
+    def add_section(self, section_id, name):
+        conn = sqlite3.connect(c.STATE_DB)
+        conn.execute("insert into thread_sections values (?,?,?)", (section_id, name, None))
+        conn.commit()
+        conn.close()
 
     def add_item(self, thread_id, item_type, payload, at_ms, turn_id="t1"):
         conn = sqlite3.connect(c.HIST_DB)
@@ -278,6 +303,63 @@ class TestTranscriptShape(TempDbs):
         work = [e for e in r["entries"] if e["role"] == "work"][0]
         self.assertEqual(work["count"], 30)
         self.assertEqual(len(work["entries"]), 30)
+
+
+class TestArchivedAndPinned(TempDbs):
+    """归档的不列出；置顶的单独成组；两种排序都要成立。"""
+
+    def test_archived_sessions_are_hidden(self):
+        self.add_thread("live", "在用的会话", updated_at=2000)
+        self.add_thread("gone", "已经归档的会话", updated_at=3000, archived=1)
+        names = [r["name"] for r in c.latest_threads(20)]
+        self.assertIn("在用的会话", names)
+        self.assertNotIn("已经归档的会话", names)
+
+    def test_include_archived_still_works(self):
+        self.add_thread("gone", "归档的", updated_at=3000, archived=1)
+        names = [r["name"] for r in c.latest_threads(20, include_archived=True)]
+        self.assertIn("归档的", names)
+
+    def test_pinned_comes_from_the_pinned_section(self):
+        self.add_section("sec-pin", "Pinned")
+        self.add_thread("a", "置顶会话", section="sec-pin", position=2000000)
+        self.add_thread("b", "普通会话", updated_at=5000)
+        rows = c.latest_threads(20)
+        by_id = {r["id"]: r for r in rows}
+        self.assertTrue(by_id["a"]["pinned"])
+        self.assertFalse(by_id["b"]["pinned"])
+        self.assertEqual(by_id["a"]["pinnedPosition"], 2000000)
+
+    def test_a_section_that_is_not_pinned_does_not_count(self):
+        self.add_section("sec-other", "Archive")
+        self.add_thread("a", "别的分组", section="sec-other", position=1)
+        rows = c.latest_threads(20)
+        self.assertFalse(rows[0]["pinned"])
+
+    def test_recent_order_uses_recency_not_updated(self):
+        # 故意让 updated_at 和 recency_at_ms 指向相反的顺序：
+        # 用错字段就会得到相反的列表。
+        self.add_thread("old-but-recent", "最近用过", updated_at=1000, recency_ms=9000)
+        self.add_thread("new-but-stale", "刚被改过", updated_at=8000, recency_ms=2000)
+        names = [r["name"] for r in c.latest_threads(20, order="recent")]
+        self.assertEqual(names, ["最近用过", "刚被改过"])
+
+    def test_updated_order_still_available(self):
+        self.add_thread("x", "旧的", updated_at=1000, recency_ms=9000)
+        self.add_thread("y", "新的", updated_at=8000, recency_ms=2000)
+        names = [r["name"] for r in c.latest_threads(20, order="updated")]
+        self.assertEqual(names, ["新的", "旧的"])
+
+    def test_build_list_puts_pinned_first(self):
+        self.add_section("sec-pin", "Pinned")
+        # 置顶的那个 updated_at 更老，仍然必须排在最前。
+        self.add_thread("pin", "置顶的", updated_at=1000, section="sec-pin", position=1)
+        self.add_thread("fresh", "更新的", updated_at=9000, recency_ms=9000)
+        # live_turn 会去问 app-server，这里传 None，失败会被 build_list 兜住，
+        # 测试只关心排序。
+        data = c.build_list(None, 20, "recent")
+        self.assertEqual(data["sessions"][0]["id"], "pin")
+        self.assertTrue(data["sessions"][0]["pinned"])
 
 
 class TestTranscriptPaging(TempDbs):

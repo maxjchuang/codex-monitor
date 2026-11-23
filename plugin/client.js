@@ -33,6 +33,10 @@ window.__ModuleLoader__.load({
       'page.counts': '{total} 个会话 · {running} 正在跑 · {waiting} 等你回复',
       'page.updated': '更新于 {time}',
       'list.title': '会话',
+      'list.pinned': '置顶',
+      'list.groupBy': '分组方式',
+      'list.byProject': '按项目',
+      'list.byRecent': '按最近',
       'list.empty': '还没有会话',
       'list.show': '展开会话列表',
       'list.hide': '收起会话列表',
@@ -90,6 +94,10 @@ window.__ModuleLoader__.load({
       'page.counts': '{total} sessions · {running} running · {waiting} waiting',
       'page.updated': 'Updated {time}',
       'list.title': 'Sessions',
+      'list.pinned': 'Pinned',
+      'list.groupBy': 'Group by',
+      'list.byProject': 'Project',
+      'list.byRecent': 'Recent',
       'list.empty': 'No sessions yet',
       'list.show': 'Show session list',
       'list.hide': 'Hide session list',
@@ -251,6 +259,17 @@ window.__ModuleLoader__.load({
    不是撑到最右边（space-between）。标题短的时候那样会空出一大片。 */
 .cxm-list-title{margin:0;font-size:14px;font-weight:500;display:flex;align-items:center;
   gap:6px;justify-content:flex-start}
+/* 分组切换：两个小段，选中的那个用浅底强调。 */
+.cxm-seg{display:inline-flex;align-items:center;gap:2px;margin-left:auto;flex:none;
+  padding:2px;border-radius:var(--dsw-radius-sm);
+  background:var(--dsw-alias-interactive-bg-hover)}
+.cxm-seg-btn{border:0;background:none;cursor:pointer;font-family:inherit;
+  font-size:11px;line-height:16px;padding:2px 6px;border-radius:var(--dsw-radius-xs);
+  color:var(--dsw-alias-label-tertiary);transition:background-color .1s,color .1s}
+.cxm-seg-btn[data-active='true']{background:var(--dsw-alias-bg-base);
+  color:var(--dsw-alias-label-primary)}
+.cxm-seg-btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset:1px}
 .cxm-list-counts{color:var(--dsw-alias-label-tertiary);font-size:12px;margin-top:4px;
   line-height:20px}
 .cxm-list-body{flex:1;min-height:0;overflow:auto;padding:0 8px 16px;display:flex;
@@ -678,7 +697,10 @@ window.__ModuleLoader__.load({
 
     function groupSessions(sessions) {
       const byProject = new Map()
+      // 置顶会话由 pinnedSessions 单独成组，这里必须排除，
+      // 否则它会在置顶区和自己的项目里各出现一次。
       for (const session of sessions) {
+        if (session.pinned) continue
         const key = session.project || session.cwd || '-'
         if (!byProject.has(key)) byProject.set(key, { project: key, cwd: session.cwd, sessions: [] })
         byProject.get(key).sessions.push(session)
@@ -703,6 +725,44 @@ window.__ModuleLoader__.load({
       // 需要你注意的项目永远优先；同一优先级内跟 Codex 的项目顺序走。
       groups.sort((a, b) => a.rank - b.rank || a.position - b.position || b.updatedAt - a.updatedAt)
       return groups
+    }
+
+    /** 置顶会话单独成一组，放在所有项目之上。组内按 Codex 的置顶顺序。 */
+    function pinnedSessions(sessions) {
+      return sessions
+        .filter((s) => s.pinned)
+        .sort((a, b) => (a.pinnedPosition ?? 0) - (b.pinnedPosition ?? 0))
+    }
+
+    /** 不分项目，只按最近使用排。置顶的仍然单独成组，所以这里只取其余的。 */
+    function recentSessions(sessions) {
+      return sessions
+        .filter((s) => !s.pinned)
+        .sort(
+          (a, b) =>
+            (b.recencyAt ?? (b.updatedAt ?? 0) * 1000) -
+            (a.recencyAt ?? (a.updatedAt ?? 0) * 1000),
+        )
+    }
+
+    /** 图钉：和 DSH 其他图标一样 16×16 描边。斜着放，像真的按在板上。 */
+    function PinGlyph() {
+      return h(
+        'svg',
+        { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': 'true', focusable: 'false' },
+        h('path', {
+          d: 'M5.6 1.9h4.8l-.9 3.4 2.2 2.2v1.2H4.3V7.5l2.2-2.2-.9-3.4Z',
+          stroke: 'currentColor',
+          'stroke-width': 1.3,
+          'stroke-linejoin': 'round',
+        }),
+        h('path', {
+          d: 'M8 8.7v5',
+          stroke: 'currentColor',
+          'stroke-width': 1.3,
+          'stroke-linecap': 'round',
+        }),
+      )
     }
 
     /** Folder and chevron glyphs, sized to the 16x20 slot DSH uses in its tree. */
@@ -812,6 +872,28 @@ window.__ModuleLoader__.load({
                 : t('list.groupRunning', { n: group.running }),
             ),
         h('span', { className: 'cxm-group-count' }, String(group.sessions.length)),
+      )
+    }
+
+    /** 置顶会话的组头。和项目头同一套结构，只是图标换成图钉、没有徽标。 */
+    function PinnedHeader({ t, count, collapsed, onToggle }) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          className: 'cxm-group-head',
+          'data-collapsed': collapsed ? 'true' : 'false',
+          'aria-expanded': collapsed ? 'false' : 'true',
+          onClick: onToggle,
+        },
+        h(
+          'span',
+          { className: 'cxm-group-slot' },
+          h('span', { className: 'cxm-group-folder' }, h(PinGlyph)),
+          h('span', { className: 'cxm-group-chevron' }, h(ChevronGlyph)),
+        ),
+        h('span', { className: 'cxm-group-name' }, t('list.pinned')),
+        h('span', { className: 'cxm-group-count' }, String(count)),
       )
     }
 
@@ -1586,6 +1668,9 @@ window.__ModuleLoader__.load({
       const [selectedId, setSelectedId] = useState(null)
       // Collapsed projects, keyed by project name. Absent means expanded.
       const [collapsed, setCollapsed] = useState({})
+      // 分组方式：按项目（Codex 默认）或按最近使用（一条平铺的列表）。
+      // 两种视图里置顶会话都单独成组排在最上面。
+      const [mode, setMode] = useState('project')
       // Projects whose full session list was expanded past the default cap.
       const [expanded, setExpanded] = useState({})
       // 宽度判定用 matchMedia 而不是读一次 innerWidth，旋转屏幕或改窗口大小时能跟着变。
@@ -1703,56 +1788,78 @@ window.__ModuleLoader__.load({
           // 窄屏上列表是覆盖层，选完就该让开，否则一直挡住对话。
           if (isNarrow()) setListOpen(false)
         }
+        const pinned = pinnedSessions(sessions)
         const groups = groupSessions(sessions)
-        // A single project needs no heading; the grouping only earns its keep once
-        // there is something to group.
-        if (groups.length === 1) {
-          return groups[0].sessions.map((session) =>
-            h(SessionRow, { key: session.id, t, session, selected: session.id === selectedId, onSelect: pick }),
-          )
-        }
-        return groups.flatMap((group) => {
-          const isCollapsed = collapsed[group.project] === true
-          const head = h(ProjectHeader, {
-            key: `h:${group.project}`,
+        const row = (session) =>
+          h(SessionRow, {
+            key: session.id,
             t,
-            group,
-            collapsed: isCollapsed,
-            onToggle: () =>
-              setCollapsed((prev) => ({ ...prev, [group.project]: !isCollapsed })),
+            session,
+            selected: session.id === selectedId,
+            onSelect: pick,
           })
-          if (isCollapsed) return [head]
-          // One busy project can hold dozens of sessions; show the most urgent few and
-          // let the reader pull the rest open, the way Codex's own sidebar does.
-          const open = expanded[group.project] === true
-          const shown = open ? group.sessions : group.sessions.slice(0, GROUP_PREVIEW)
-          const hidden = group.sessions.length - shown.length
-          return [
-            head,
-            ...shown.map((session) =>
-              h(SessionRow, {
-                key: session.id,
+
+        // 置顶的单独一组，永远在最上面，不掺进任何项目里。
+        const pinnedBlock = pinned.length
+          ? [
+              h(PinnedHeader, {
+                key: 'h:pinned',
                 t,
-                session,
-                selected: session.id === selectedId,
-                onSelect: pick,
+                count: pinned.length,
+                collapsed: collapsed.__pinned === true,
+                onToggle: () =>
+                  setCollapsed((prev) => ({ ...prev, __pinned: !prev.__pinned })),
               }),
-            ),
-            hidden > 0
-              ? h(
-                  'button',
-                  {
-                    key: `m:${group.project}`,
-                    type: 'button',
-                    className: 'cxm-group-more',
-                    onClick: () =>
-                      setExpanded((prev) => ({ ...prev, [group.project]: true })),
-                  },
-                  t('list.showMore', { n: hidden }),
-                )
-              : null,
-          ]
-        })
+              ...(collapsed.__pinned === true ? [] : pinned.map(row)),
+            ]
+          : []
+
+        // 按项目分组：单个项目时不必显示标题，分组只在真能省事时才出现。
+        const projectBlock =
+          groups.length === 1
+            ? groups[0].sessions.map(row)
+            : groups.flatMap((group) => {
+                const isCollapsed = collapsed[group.project] === true
+                const head = h(ProjectHeader, {
+                  key: `h:${group.project}`,
+                  t,
+                  group,
+                  collapsed: isCollapsed,
+                  onToggle: () =>
+                    setCollapsed((prev) => ({ ...prev, [group.project]: !isCollapsed })),
+                })
+                if (isCollapsed) return [head]
+                // One busy project can hold dozens of sessions; show the most urgent few and
+                // let the reader pull the rest open, the way Codex's own sidebar does.
+                const open = expanded[group.project] === true
+                const shown = open ? group.sessions : group.sessions.slice(0, GROUP_PREVIEW)
+                const hidden = group.sessions.length - shown.length
+                return [
+                  head,
+                  ...shown.map(row),
+                  hidden > 0
+                    ? h(
+                        'button',
+                        {
+                          key: `m:${group.project}`,
+                          type: 'button',
+                          className: 'cxm-group-more',
+                          onClick: () =>
+                            setExpanded((prev) => ({ ...prev, [group.project]: true })),
+                        },
+                        t('list.showMore', { n: hidden }),
+                      )
+                    : null,
+                ]
+              })
+
+        // 按最近使用：不分项目，一条平铺的列表，置顶的仍然在上面。
+        const recentBlock = recentSessions(sessions).map(row)
+
+        return [
+          ...pinnedBlock,
+          ...(mode === 'recent' ? recentBlock : projectBlock),
+        ]
       }
 
       return h(
@@ -1768,6 +1875,25 @@ window.__ModuleLoader__.load({
               'h1',
               { className: 'cxm-list-title' },
               h('span', null, t('list.title')),
+              h(
+                'span',
+                { className: 'cxm-seg', role: 'tablist', 'aria-label': t('list.groupBy') },
+                ...['project', 'recent'].map((value) =>
+                  h(
+                    'button',
+                    {
+                      key: value,
+                      type: 'button',
+                      role: 'tab',
+                      className: 'cxm-seg-btn',
+                      'data-active': mode === value ? 'true' : 'false',
+                      'aria-selected': mode === value ? 'true' : 'false',
+                      onClick: () => setMode(value),
+                    },
+                    t(value === 'project' ? 'list.byProject' : 'list.byRecent'),
+                  ),
+                ),
+              ),
               h(
                 'button',
                 {

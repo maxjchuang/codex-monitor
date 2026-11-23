@@ -97,14 +97,22 @@ const light = {
     '11px / 16px ui-monospace, SFMono-Regular, Menlo, monospace',
 }
 
+const pinned = [
+  ['GridView 表格组件', '18:53', 'waiting', '是否按东八区重新解析？'],
+  ['接入 MCP', '18:51', 'running', null],
+]
+
+const pin = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M5.6 1.9h4.8l-.9 3.4 2.2 2.2v1.2H4.3V7.5l2.2-2.2-.9-3.4Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M8 8.7v5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`
+
+const pinnedTitles = new Set(pinned.map((r) => r[0]))
+const MODE = process.argv[3] === 'recent' ? 'recent' : 'project'
+
 const groups = [
   ['bitable-sdk', [
-    ['GridView 表格组件', '18:53', 'waiting', '是否按东八区重新解析？'],
     ['修复底部栏未渲染', '18:40', 'running', null],
     ['定位双向关联字段显示为空', '17:22', 'stopped', null],
   ]],
   ['Bitable 组件库', [
-    ['接入 MCP', '18:51', 'running', null],
     ['拉取 develop 启动 Storybook', '16:03', 'done', null],
   ]],
   ['faster', [
@@ -118,6 +126,40 @@ const folder = (open) =>
       ? 'M2 5.5A1.5 1.5 0 0 1 3.5 4h2.6l1.2 1.4h4.2A1.5 1.5 0 0 1 13 6.9v3.6a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 2 10.5z'
       : 'M2 5A1.5 1.5 0 0 1 3.5 3.5h2.4l1.3 1.5h4.3A1.5 1.5 0 0 1 13 6.5V11a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 2 11z'
   }" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>`
+
+const toneOf = (state) =>
+  state === 'waiting' ? 'warn'
+  : state === 'running' ? 'business'
+  : state === 'done' ? 'success'
+  : 'idle'
+
+// 和项目内的会话行同一套结构，只是没有缩进。
+const sessionRow = ([title, time, state, ask]) => `
+        <button class="cxm-row" data-waiting="${state === 'waiting' && ask ? 'true' : 'false'}">
+          <span class="cxm-slot">
+            <span class="cxm-dot" style="background:var(--dsw-alias-state-${toneOf(state)}-primary)"></span>
+          </span>
+          <span class="cxm-row-name">${title}</span>
+          ${
+            state === 'waiting' && ask
+              ? `<span class="cxm-row-ask">${ask}</span>`
+              : `<span class="cxm-row-time">${time}</span>`
+          }
+        </button>`
+
+const recentRows = [...pinned.map(r => r)].slice(0,0).concat([['回复两个字：可用','18:47','stopped',null],['确认额度不足接入 AgentPlan','17:58','done',null],['复现并定位甘特图日期错位','16:31','done',null]]).map(sessionRow).join('')
+
+const pinnedBlock = `
+        <button class="cxm-group-head" title="置顶">
+          <span class="cxm-group-slot">
+            <span class="cxm-group-folder">${pin}</span>
+            <span class="cxm-group-chevron">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="transform:rotate(90deg)"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+          </span>
+          <span class="cxm-group-name">置顶</span>
+          <span class="cxm-group-count">${pinned.length}</span>
+        </button>${pinned.map(sessionRow).join('')}`
 
 const rows = groups
   .map(([project, items]) => {
@@ -212,10 +254,10 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
 <div class="cxm-page" data-drawer="${drawer}">
   <div class="cxm-list-pane" data-open="${listOpen}">
     <div class="cxm-list-head">
-      <h1 class="cxm-list-title"><span>会话</span><button class="cxm-icon-btn" data-size="sm" aria-label="刷新" title="刷新"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false"><path d="M14 8a6 6 0 0 1-10.2 4.3L2 10.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 14v-3.5h3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 8a6 6 0 0 1 10.2-4.3L14 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 2v3.5h-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button></h1>
+      <h1 class="cxm-list-title"><span>会话</span><span class="cxm-seg" role="tablist" aria-label="分组方式">${MODE === 'project' ? '<button class="cxm-seg-btn" data-active="true" role="tab" aria-selected="true">按项目</button><button class="cxm-seg-btn" data-active="false" role="tab" aria-selected="false">按最近</button>' : '<button class="cxm-seg-btn" data-active="false" role="tab" aria-selected="false">按项目</button><button class="cxm-seg-btn" data-active="true" role="tab" aria-selected="true">按最近</button>'}</span><button class="cxm-icon-btn" data-size="sm" aria-label="刷新" title="刷新"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false"><path d="M14 8a6 6 0 0 1-10.2 4.3L2 10.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 14v-3.5h3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 8a6 6 0 0 1 10.2-4.3L14 5.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 2v3.5h-3.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></button></h1>
       <div class="cxm-list-counts">6 个会话 · 2 正在跑 · 1 等你回复</div>
     </div>
-    <div class="cxm-list-body">${rows}</div>
+    <div class="cxm-list-body">${pinnedBlock}${MODE === 'recent' ? recentRows : rows}</div>
   </div>
   <button class="cxm-drawer-mask" aria-hidden="true"></button>
   <div class="cxm-chat-pane">
