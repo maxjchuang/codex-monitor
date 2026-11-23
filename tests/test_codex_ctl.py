@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -303,6 +304,35 @@ class TestTranscriptShape(TempDbs):
         work = [e for e in r["entries"] if e["role"] == "work"][0]
         self.assertEqual(work["count"], 30)
         self.assertEqual(len(work["entries"]), 30)
+
+
+class TestWriterBusy(TempDbs):
+    """写入锁：投递用完必须释放，否则下一次投递会被自己挡住。"""
+
+    def test_busy_error_is_recognised(self):
+        self.assertTrue(c.is_writer_busy(
+            RuntimeError("thread/resume: {'code': -32600, 'message': "
+                         "'thread x already has an active writer'}")))
+        self.assertFalse(c.is_writer_busy(RuntimeError("thread not found: x")))
+        self.assertFalse(c.is_writer_busy(RuntimeError("timeout")))
+
+    def test_close_waits_for_the_process_to_exit(self):
+        """close 只 terminate 不等退出，锁还没放掉，重试就会撞同一把锁。"""
+        proc = mock.Mock()
+        srv = object.__new__(c.AppServer)
+        srv.proc = proc
+        srv.close()
+        proc.terminate.assert_called_once()
+        proc.wait.assert_called_once()
+        self.assertGreater(proc.wait.call_args.kwargs.get("timeout", 0), 0)
+
+    def test_close_falls_back_to_kill_when_it_will_not_die(self):
+        proc = mock.Mock()
+        proc.wait.side_effect = [Exception("still running"), 0]
+        srv = object.__new__(c.AppServer)
+        srv.proc = proc
+        srv.close()
+        proc.kill.assert_called_once()
 
 
 class TestArchivedAndPinned(TempDbs):

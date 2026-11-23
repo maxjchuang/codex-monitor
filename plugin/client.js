@@ -79,6 +79,7 @@ window.__ModuleLoader__.load({
       'reply.cancel': '取消',
       'reply.sent': '已提交给 Codex，稍后会处理。',
       'reply.failed': '投递失败：{error}',
+      'reply.busy': '这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。',
       'reply.note': '追加为新的一轮，不打断正在跑的任务。⌘↵ 发送。',
       'reply.options': 'Codex 给出的选项（点击填入，需你自己发送）：',
     }
@@ -140,6 +141,7 @@ window.__ModuleLoader__.load({
       'reply.cancel': 'Cancel',
       'reply.sent': 'Submitted to Codex; it will pick this up shortly.',
       'reply.failed': 'Could not deliver: {error}',
+      'reply.busy': 'Codex is holding this session open. Switch to another session in Codex, or close it, then send again.',
       'reply.note': 'Appends a new turn; does not interrupt work already running. ⌘↵ sends.',
       'reply.options': 'Options Codex offered (click to fill in, you still send):',
     }
@@ -165,6 +167,8 @@ window.__ModuleLoader__.load({
         const error = payload?.error ?? `HTTP ${response.status}`
         const failure = new Error(error)
         failure.missingPython = response.status === 503
+        // 会话被别的进程占着（通常是在 Codex 桌面端里开着），不是错误而是状态。
+        failure.threadBusy = payload?.busy === true || response.status === 409
         throw failure
       }
       return payload
@@ -1238,7 +1242,12 @@ window.__ModuleLoader__.load({
           onSent?.()
         } catch (error) {
           // Keep the draft: losing the typed message is worse than the failed send.
-          setNote({ ok: false, text: t('reply.failed', { error: error.message }) })
+          setNote({
+            ok: false,
+            text: error.threadBusy
+              ? t('reply.busy')
+              : t('reply.failed', { error: error.message }),
+          })
         } finally {
           setBusy(false)
         }

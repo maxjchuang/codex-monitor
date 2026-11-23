@@ -764,11 +764,41 @@ class AppServer:
                     return None
                 self.cond.wait(min(remaining, 1.0))
 
-    def close(self):
+    def close(self, wait=2.0):
+        """关掉进程并等它真的退出。
+
+        app-server 在退出时才释放 thread 的写入锁，所以「terminate 完立刻重试」
+        会和还没退干净的旧进程抢同一把锁。等一会儿。
+        """
         try:
             self.proc.terminate()
         except Exception:
-            pass
+            return
+        try:
+            self.proc.wait(timeout=wait)
+        except Exception:
+            try:
+                self.proc.kill()
+                self.proc.wait(timeout=1.0)
+            except Exception:
+                pass
+
+
+WRITER_BUSY = "already has an active writer"
+
+
+def is_writer_busy(exc):
+    return WRITER_BUSY in str(exc)
+
+
+def push_turn(srv, thread_id, message):
+    """resume 之后投一轮。srv 必须是新进程，否则 resume 会撞上自己的锁。"""
+    srv.call("thread/resume", {"threadId": thread_id})
+    return srv.call(
+        "turn/start",
+        {"threadId": thread_id, "input": [
+            {"type": "text", "text": message, "text_elements": []}]},
+    )
 
 
 def deliver(thread_id, message, wait_sec, resume=True, srv=None, quiet=False):
@@ -1169,16 +1199,28 @@ def serve(port=0, host="127.0.0.1"):
                 if not tid or not msg:
                     self._json({"ok": False, "error": "threadId and message required"}, 400)
                     return
+                # 投递要 resume，而 resume 会把这个 thread 的写入锁挂到进程上，
+                # 直到进程退出才放。所以投递不能借用常驻连接：借了它就一直占着
+                # 这个会话，之后的投递（包括 Codex 桌面端自己）全会被
+                # "already has an active writer" 挡住。
+                # 这里开一个一次性连接，投完立刻关掉，锁跟着释放。
                 try:
-                    with srv_lock:
-                        cur = app_server()
-                        cur.call("thread/resume", {"threadId": tid})
-                        cur.call("turn/start", {"threadId": tid, "input": [
-                            {"type": "text", "text": msg, "text_elements": []}]})
+                    srv = AppServer()
+                    try:
+                        push_turn(srv, tid, msg)
+                    finally:
+                        srv.close()
                     self._json({"ok": True, "delivered": True})
                 except Exception as exc:
-                    reset_app_server()
-                    self._json({"ok": False, "error": str(exc)}, 500)
+                    if is_writer_busy(exc):
+                        self._json({
+                            "ok": False,
+                            "error": "这个会话正被另一个进程占着（多半是在 Codex 桌面端里开着）。"
+                                     "请先在 Codex 里切走或关掉它，再投递。",
+                            "busy": True,
+                        }, 409)
+                    else:
+                        self._json({"ok": False, "error": str(exc)}, 500)
                 return
 
             self._json({"ok": False, "error": "not found"}, 404)

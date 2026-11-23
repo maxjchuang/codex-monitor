@@ -61,6 +61,7 @@
   "reply.cancel": "Cancel",
   "reply.sent": "Submitted to Codex; it will pick this up shortly.",
   "reply.failed": "Could not deliver: {error}",
+  "reply.busy": "Codex is holding this session open. Switch to another session in Codex, or close it, then send again.",
   "reply.note": "Appends a new turn; does not interrupt work already running. ⌘↵ sends.",
   "reply.options": "Options Codex offered (click to fill in, you still send):"
 }
