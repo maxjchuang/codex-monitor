@@ -144,6 +144,7 @@ const statusPayload = {
     updatedAt: 1795431200, state: 'waiting', activityAgeSec: 12,
     questions: sessions[0].questions,
     items: [],
+    locked: false,
     transcriptHasMore: true,
     transcriptBefore: 1795430000000,
     transcript: [
@@ -164,7 +165,9 @@ const calls = []
 globalThis.fetch = async (url) => {
   calls.push(String(url))
   const body = String(url).includes('status') ? statusPayload : statePayload
-  return { ok: true, status: 200, json: async () => body }
+  // 返回浅拷贝：详情对象会被 useState 存住，若和 fixture 共用引用，
+  // 后面还原 fixture 会把已经交给界面的那份数据也一起改回去。
+  return { ok: true, status: 200, json: async () => ({ ...body, data: { ...body.data } }) }
 }
 
 const dict = {
@@ -195,6 +198,9 @@ const translate = (key, params) => {
   if (params) for (const [k, v] of Object.entries(params)) s = s.replace(`{${k}}`, String(v))
   return s
 }
+
+// 会话被 Codex 占着时，输入框要锁住并说明原因。单独渲染一遍：主 fixture
+// 是「可发送」的常态，锁定的分支不能混进去污染那些检查。
 
 // 内联字典与 locale/*.json 的 key 必须完全一致。
 function dictParityChecks() {
@@ -269,6 +275,7 @@ let listOpenAttr = null
 let drawerAttr = null
 let dockParent = null
 let cardFound = false
+let textareaDisabled = null
 const allButtons = []   // 跨渲染累积，方便找只出现在某次渲染里的按钮
 function walk(node, at) {
   if (node === null || node === undefined || node === false) return
@@ -283,6 +290,10 @@ function walk(node, at) {
     walk(node.children, at)
     contextStack.pop()
     return
+  }
+  // 记下 textarea 的 disabled，用来断言「锁定后不能输入」。
+  if (node.type === 'textarea') {
+    textareaDisabled = node.props?.disabled === true
   }
   if (typeof node.type === 'function') {
     const name = node.type.name || 'Anon'
@@ -320,6 +331,7 @@ function walk(node, at) {
 }
 
 function renderOnce() {
+  globalThis.__rc = (globalThis.__rc || 0) + 1
   dirty = false
   pendingEffects = []
   texts.length = 0
@@ -407,6 +419,7 @@ const checks = [
   ['composer is a card, not a bordered row', composer_is_card()],
   // 容器上开 smooth 会让「切会话时贴到底部」变成一段动画，
   // 表现就是打开会话先看到顶部、然后自己滚下去。
+  // 会话被 Codex 占着时，输入框必须锁住并说明原因，而不是等用户敲完再报错。
   ['transcript does not animate its scroll on open', (() => {
     // 从注入到 head 的样式表里读，别重新解析一遍 client.js。
     const style = headChildren.find((el) => el['data-plugin-css'] === 'codex-monitor')

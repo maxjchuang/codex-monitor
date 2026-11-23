@@ -16,6 +16,7 @@
 
 import argparse
 import json
+import fcntl
 import os
 import re
 import sqlite3
@@ -784,6 +785,30 @@ class AppServer:
                 pass
 
 
+LOCK_DIR = os.path.join(CODEX_HOME, "thread-writer-locks")
+
+
+def thread_locked(thread_id):
+    """这个会话的写入锁是否被别的进程占着。
+
+    Codex 给每个 thread 一个 .lock 文件，持有者用 flock 独占。直接试着拿一次
+    非阻塞锁就知道结果，不用真的 resume —— resume 反而会自己占住它。
+    """
+    path = os.path.join(LOCK_DIR, f"{thread_id}.lock")
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            return False
+    except OSError:
+        return False
+
+
 WRITER_BUSY = "already has an active writer"
 
 
@@ -944,6 +969,8 @@ def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
         "transcript": chat["entries"],
         "transcriptTruncated": chat["truncated"],
         "transcriptHasMore": chat["hasMore"],
+        # 被别的进程（通常是 Codex 桌面端）占着时不能投递，UI 据此禁用输入框。
+        "locked": thread_locked(thread_id),
         "transcriptBefore": chat["before"],
         "items": [
             {"type": it["type"], "at": it["at"],

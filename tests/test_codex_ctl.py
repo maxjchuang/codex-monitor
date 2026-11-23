@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import fcntl
 import unittest
 from unittest import mock
 
@@ -333,6 +334,46 @@ class TestWriterBusy(TempDbs):
         srv.proc = proc
         srv.close()
         proc.kill.assert_called_once()
+
+
+class TestThreadLocked(TempDbs):
+    """UI 要能提前知道会话被占，而不是等用户敲完再报错。"""
+
+    def test_missing_lock_file_means_free(self):
+        self.assertFalse(c.thread_locked("no-such-thread"))
+
+    def test_free_lock_file_is_detected_as_free(self):
+        tid = "01a2aaaa-0000-7000-8000-000000000001"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, f"{tid}.lock")
+            open(path, "w").close()
+            with mock.patch.object(c, "LOCK_DIR", d):
+                self.assertFalse(c.thread_locked(tid))
+
+    def test_held_lock_file_is_detected_as_locked(self):
+        tid = "01a2aaaa-0000-7000-8000-000000000002"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, f"{tid}.lock")
+            handle = open(path, "w")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with mock.patch.object(c, "LOCK_DIR", d):
+                    self.assertTrue(c.thread_locked(tid))
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                handle.close()
+            # 放锁之后必须回到「空闲」，否则界面会一直锁着。
+            with mock.patch.object(c, "LOCK_DIR", d):
+                self.assertFalse(c.thread_locked(tid))
+
+    def test_status_reports_the_lock(self):
+        """detail.locked 是界面禁用输入框的依据，必须真的出现在返回里。"""
+        self.add_thread("01a2aaaa-0000-7000-8000-000000000003", "锁定会话")
+        srv = mock.Mock()
+        srv.call.side_effect = RuntimeError("no live turn")
+        with mock.patch.object(c, "thread_locked", return_value=True):
+            data = c.build_status(srv, "01a2aaaa-0000-7000-8000-000000000003", 1, 5)
+        self.assertIs(data.get("locked"), True)
 
 
 class TestArchivedAndPinned(TempDbs):
