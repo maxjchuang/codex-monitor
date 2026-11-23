@@ -156,5 +156,51 @@ class TestThreads(TempDbs):
         self.assertEqual(c.last_activity_at("x"), 0)
 
 
+class TestDeliverReuse(TempDbs):
+    """新建的线程只存在于创建它的 app-server 进程里，投递必须复用同一个进程。"""
+
+    def test_deliver_reuses_given_server(self):
+        closed = []
+
+        class Fake:
+            def __init__(self):
+                self.calls = []
+
+            def call(self, method, params=None, timeout=180):
+                self.calls.append(method)
+                return {"turn": {"status": "completed", "durationMs": 1, "items": []}}
+
+            def wait_notification(self, method, timeout):
+                return {"turn": {"status": "completed", "durationMs": 1, "items": []}}
+
+            def close(self):
+                closed.append(True)
+
+        fake = Fake()
+        c.deliver("tid", "hi", 0, resume=False, srv=fake)
+        self.assertIn("turn/start", fake.calls)
+        self.assertNotIn("thread/resume", fake.calls)
+        self.assertEqual(closed, [], "传入的 server 不应被 deliver 关闭")
+
+    def test_deliver_resumes_when_asked(self):
+        class Fake:
+            def __init__(self):
+                self.calls = []
+
+            def call(self, method, params=None, timeout=180):
+                self.calls.append(method)
+                return {}
+
+            def wait_notification(self, method, timeout):
+                return None
+
+            def close(self):
+                pass
+
+        fake = Fake()
+        c.deliver("tid", "hi", 0, resume=True, srv=fake)
+        self.assertEqual(fake.calls[:2], ["thread/resume", "turn/start"])
+
+
 if __name__ == "__main__":
     unittest.main()

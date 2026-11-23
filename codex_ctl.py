@@ -336,8 +336,10 @@ class AppServer:
             pass
 
 
-def deliver(thread_id, message, wait_sec, resume=True):
-    srv = AppServer()
+def deliver(thread_id, message, wait_sec, resume=True, srv=None):
+    """投递一轮任务。srv 由调用方传入时复用它（新建线程必须复用，否则新进程看不到该线程）。"""
+    own = srv is None
+    srv = srv or AppServer()
     try:
         if resume:
             srv.call("thread/resume", {"threadId": thread_id})
@@ -361,7 +363,8 @@ def deliver(thread_id, message, wait_sec, resume=True):
             if item.get("type") == "agentMessage" and item.get("text"):
                 print(f"\nCodex: {item['text']}")
     finally:
-        srv.close()
+        if own:
+            srv.close()
 
 
 # ─────────────────────────── 输出 ───────────────────────────
@@ -546,9 +549,9 @@ def deliver_new(args):
             {"cwd": os.path.abspath(args.cwd), "approvalPolicy": "never", "sandbox": "danger-full-access"},
         )
         tid = res["thread"]["id"]
+        deliver(tid, args.message, args.wait, resume=False, srv=srv)
     finally:
         srv.close()
-    deliver(tid, args.message, args.wait, resume=False)
 
 
 if __name__ == "__main__":
