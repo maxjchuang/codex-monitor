@@ -135,10 +135,13 @@ const statusPayload = {
     items: [],
     transcript: [
       { role: 'user', at: 1795431000, text: '帮我修一下 GridView 的空行。' },
-      { role: 'agent', at: 1795431010, text: '我先看一下 `GridView` 的**组件实现**。' },
-      { role: 'action', at: 1795431020, label: '执行命令', text: "rg -n 'GridView' src" },
-      { role: 'action', at: 1795431025, label: '执行命令', text: 'npm test', count: 9,
-        lastLabel: '执行命令', lastText: 'npm test' },
+      // 一轮的中间过程收在 work 块里，默认收起；最终答复单独露出。
+      { role: 'work', at: 1795431025, durationMs: 389000, count: 3, entries: [
+        { role: 'agent', at: 1795431010, text: '我先看一下 `GridView` 的**组件实现**。' },
+        { role: 'action', at: 1795431020, label: '执行命令', text: "rg -n 'GridView' src" },
+        { role: 'action', at: 1795431025, label: '执行命令', text: 'npm test', count: 9,
+          lastLabel: '执行命令', lastText: 'npm test' },
+      ] },
       { role: 'agent', at: 1795431030, text: '要不要删除空白子记录？',
         final: true, questions: sessions[0].questions },
     ],
@@ -349,11 +352,13 @@ const checks = [
   ['waiting question surfaced in list', joined.includes('是否删除空白子记录')],
   ['auto-selected the top session', calls.some((u) => u.includes('status'))],
   ['transcript: user message rendered', joined.includes('帮我修一下 GridView 的空行')],
-  ['transcript: agent message rendered', joined.includes('我先看一下') && joined.includes('组件实现')],
+  // 中间过程默认收起，正文里不该出现里面的内容，但「用时」那一行要在。
+  ['work block: elapsed line shown', joined.includes('用时') && joined.includes('6 分钟')],
+  ['work block: collapsed by default', !joined.includes('我先看一下') && !joined.includes('执行命令')],
+  ['work block: click expands and collapses', work_expands()],
   ['transcript: markdown inline code parsed', joined.includes('GridView') && !joined.includes('`GridView`')],
   ['transcript: markdown bold parsed', !joined.includes('**组件实现**')],
-  ['transcript: action collapsed to one line', joined.includes('执行命令') && joined.includes("rg -n 'GridView' src")],
-  ['transcript: collapsed run shows step count', joined.includes('共 9 步')],
+
   ['transcript: pending question block', joined.includes('Codex 在等你回答')],
   ['transcript: option buttons offered', joined.includes('删除这条临时记录')],
   ['composer present', joined.includes('给这个 Codex 会话发消息…') && joined.includes('发送')],
@@ -385,6 +390,23 @@ function toggle_hides_list() {
   btn.onClick()
   renderOnce()
   return listOpenAttr === 'false'
+}
+
+// ── work block ────────────────────────────────────────────────────────────────
+// 点「用时」那一行要能把过程展开，再点收回去。
+function work_expands() {
+  const head = clickables.find((b) => b.cls.includes('cxm-work-head'))
+  if (!head) return false
+  head.onClick()
+  renderOnce()
+  const opened = texts.join(' | ')
+  const sawWork = opened.includes('我先看一下') && opened.includes('执行命令')
+  const head2 = clickables.find((b) => b.cls.includes('cxm-work-head'))
+  if (!head2) return false
+  head2.onClick()
+  renderOnce()
+  const closed = texts.join(' | ')
+  return sawWork && !closed.includes('我先看一下')
 }
 
 // ── narrow / drawer ───────────────────────────────────────────────────────────

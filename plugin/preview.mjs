@@ -242,11 +242,12 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
           <div class="cxm-bubble">帮我看看截图里箭头指向的「添加本地文件」在暗色下的默认态和悬停态。</div>
           <div class="cxm-stamp">18:50</div>
         </div>
-        <div class="cxm-msg" data-role="agent">
-          <div class="cxm-bubble">我会对照 4001 和 Demo，重点看截图箭头指向的「添加本地文件」在暗色下的默认态和悬停态，同时检查整行悬停是否影响到相邻元素。</div>
+        <div class="cxm-work" data-open="false">
+          <button class="cxm-work-head" aria-expanded="false">
+            <span class="cxm-work-time">用时 6 分钟 29 秒</span>
+            <span class="cxm-work-chevron"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+          </button>
         </div>
-        <div class="cxm-action"><b>执行命令</b><span class="cxm-cmd">/bin/zsh -lc 'rg -n "GridView" src'</span></div>
-        <div class="cxm-action"><b>执行命令</b><span class="cxm-cmd">npm test</span><span class="cxm-run">共 63 步</span></div>
         <div class="cxm-msg" data-role="agent">
           <div class="cxm-bubble">${mdToHtml(agent1)}</div>
         </div>

@@ -176,6 +176,73 @@ class TestParsing(TempDbs):
         self.assertIsNone(c.pending_question("t"))
 
 
+class TestWorkGrouping(TempDbs):
+    """中间过程要收进 work 块，正文只留用户消息和最终答复。"""
+
+    def _entry(self, role, text, **kw):
+        d = {"role": role, "at": 0, "text": text}
+        d.update(kw)
+        return d
+
+    def test_middle_process_folds_into_work_block(self):
+        entries = [
+            self._entry("user", "修一下"),
+            self._entry("agent", "我先看看"),
+            {"role": "action", "at": 0, "label": "执行命令", "text": "ls"},
+            self._entry("agent", "修好了", final=True),
+        ]
+        out = c.group_turns(entries, [])
+        roles = [e["role"] for e in out]
+        self.assertEqual(roles, ["user", "work", "agent"])
+        self.assertEqual(len(out[1]["entries"]), 2)
+        self.assertTrue(out[2]["final"])
+
+    def test_no_work_block_when_turn_is_just_an_answer(self):
+        entries = [
+            self._entry("user", "问个问题"),
+            self._entry("agent", "答", final=True),
+        ]
+        out = c.group_turns(entries, [])
+        self.assertEqual([e["role"] for e in out], ["user", "agent"])
+
+    def test_duration_matched_by_final_item_id(self):
+        entries = [
+            self._entry("user", "修一下", id="u1"),
+            {"role": "action", "at": 0, "label": "执行命令", "text": "ls"},
+            self._entry("agent", "修好了", final=True, id="a1"),
+        ]
+        spans = [{"finalAgent": "a1", "durationMs": 389000}]
+        out = c.group_turns(entries, spans)
+        work = [e for e in out if e["role"] == "work"][0]
+        self.assertEqual(work["durationMs"], 389000)
+
+    def test_duration_left_empty_when_span_is_missing(self):
+        """中间有轮被 trim 掉时不能把时长错配到别的轮上。"""
+        entries = [
+            self._entry("user", "修一下", id="u1"),
+            {"role": "action", "at": 0, "label": "执行命令", "text": "ls"},
+            self._entry("agent", "修好了", final=True, id="a1"),
+        ]
+        spans = [{"finalAgent": "别的id", "durationMs": 999}]
+        out = c.group_turns(entries, spans)
+        work = [e for e in out if e["role"] == "work"][0]
+        self.assertIsNone(work.get("durationMs"))
+
+    def test_leading_orphan_entries_still_grouped(self):
+        """更早的轮被 trim 掉时，前面剩下的动作不能丢。"""
+        entries = [
+            {"role": "action", "at": 0, "label": "执行命令", "text": "ls"},
+            self._entry("user", "修一下"),
+            self._entry("agent", "好了", final=True),
+        ]
+        out = c.group_turns(entries, [])
+        self.assertEqual(out[0]["role"], "work")
+        self.assertIn("user", [e["role"] for e in out])
+
+    def test_empty_transcript(self):
+        self.assertEqual(c.group_turns([], []), [])
+
+
 class TestThreads(TempDbs):
     def test_latest_threads_sorted_by_update(self):
         conn = sqlite3.connect(c.STATE_DB)

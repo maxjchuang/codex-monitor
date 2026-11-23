@@ -226,16 +226,18 @@ def transcript(thread_id, limit=200, scan_limit=4000):
                 c.get("text", "") for c in payload.get("content") or [] if c.get("type") == "text"
             ).strip()
             if text:
-                out.append({"role": "user", "at": at, "text": text})
+                out.append({"role": "user", "at": at, "text": text, "id": payload.get("id")})
             continue
         if kind == "agentMessage":
             text = (payload.get("text") or "").strip()
             if text:
+                final = payload.get("phase") == "final_answer"
                 out.append({
                     "role": "agent",
                     "at": at,
                     "text": text,
-                    "final": payload.get("phase") == "final_answer",
+                    "final": final,
+                    "id": payload.get("id"),
                     "questions": payload.get("questions") or None,
                 })
             continue
@@ -244,7 +246,104 @@ def transcript(thread_id, limit=200, scan_limit=4000):
         label, detail = describe_item({"type": kind, "data": payload})
         out.append({"role": "action", "at": at, "label": label, "text": clip(detail, 240)})
 
-    return {"entries": trim_transcript(out, limit), "truncated": truncated}
+    entries = trim_transcript(out, limit)
+    return {"entries": group_turns(entries, turn_spans(thread_id)), "truncated": truncated}
+
+
+def turn_spans(thread_id):
+    """每一轮的 (user_item_id, final_agent_item_id, duration_ms)。
+
+    thread_turns 直接把「哪个用户消息开头、哪个 agent 消息收尾、跑了多久」记好了，
+    不用自己拿时间戳去猜边界。
+    """
+    conn = db(HIST_DB)
+    if not conn:
+        return []
+    try:
+        rows = conn.execute(
+            "select first_user_item_id, final_agent_item_id, duration_ms, started_at, completed_at "
+            "from thread_turns where thread_id=? order by started_at",
+            (thread_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        # 老库/测试库可能没有这两列，退化到只读时长，分组仍然可用。
+        try:
+            rows = conn.execute(
+                "select null, null, duration_ms, started_at, completed_at "
+                "from thread_turns where thread_id=? order by started_at",
+                (thread_id,),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+    finally:
+        conn.close()
+    return [
+        {
+            "firstUser": r["first_user_item_id"],
+            "finalAgent": r["final_agent_item_id"],
+            "durationMs": r["duration_ms"],
+            "startedAt": r["started_at"],
+            "completedAt": r["completed_at"],
+        }
+        for r in rows
+    ]
+
+
+def group_turns(entries, spans):
+    """把一轮里的中间过程收进 work 块，只把最终回复留在正文。
+
+    Codex 自己就是这么显示的：正文只有用户说的话和最终答复，中间的命令、推理、
+    阶段性说明都折进一行「用时 X」。所以这里按轮切开，把 user 之后的动作和
+    commentary 归到同一个 work 块，final_answer 单独露出。
+    """
+    if not entries:
+        return []
+    # 用 user 消息切轮：Codex 的一轮一定从用户消息开始。
+    turns = []
+    current = None
+    for entry in entries:
+        if entry["role"] == "user":
+            current = {"user": entry, "work": [], "final": None}
+            turns.append(current)
+            continue
+        if current is None:
+            # 前面还有没有归属的条目（比如更早的轮被 trim 掉了），单独成块。
+            current = {"user": None, "work": [], "final": None}
+            turns.append(current)
+        if entry["role"] == "agent" and entry.get("final"):
+            # 一轮里可能有多个 final_answer（中途被打断），最后一个才是收尾。
+            current["final"] = entry
+        else:
+            current["work"].append(entry)
+
+    # 时长按 final_agent_item_id 精确匹配：一轮的收尾消息 id 是唯一的，
+    # 比对顺序更可靠——中间有轮被 trim 掉也不会错位。
+    by_final = {
+        sp["finalAgent"]: sp["durationMs"]
+        for sp in spans
+        if sp.get("finalAgent") and sp.get("durationMs") is not None
+    }
+    for turn in turns:
+        final = turn["final"]
+        if final is not None and final.get("id") in by_final:
+            turn["durationMs"] = by_final[final["id"]]
+
+    out = []
+    for turn in turns:
+        if turn["user"] is not None:
+            out.append(turn["user"])
+        work = turn["work"]
+        if work:
+            out.append({
+                "role": "work",
+                "at": work[-1]["at"],
+                "durationMs": turn.get("durationMs"),
+                "count": len(work),
+                "entries": work,
+            })
+        if turn["final"] is not None:
+            out.append(turn["final"])
+    return out
 
 
 def trim_transcript(entries, limit):

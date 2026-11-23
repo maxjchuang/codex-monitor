@@ -59,6 +59,11 @@ window.__ModuleLoader__.load({
       'chat.askingYou': 'Codex 在等你回答',
       'chat.transcriptTruncated': '只显示最近 {n} 条。',
       'chat.actionRun': '共 {n} 步',
+      'work.elapsed': '用时 {time}',
+      'work.elapsedShort': '用时 {n} 秒',
+      'work.steps': '{n} 步过程',
+      'work.expand': '展开过程',
+      'work.collapse': '收起过程',
       'reply.placeholder': '给这个 Codex 会话发消息…',
       'reply.send': '发送',
       'reply.sending': '发送中…',
@@ -109,6 +114,11 @@ window.__ModuleLoader__.load({
       'chat.askingYou': 'Codex is waiting for your answer',
       'chat.transcriptTruncated': 'Showing the latest {n} entries only.',
       'chat.actionRun': '{n} steps',
+      'work.elapsed': 'Took {time}',
+      'work.elapsedShort': 'Took {n}s',
+      'work.steps': '{n} steps',
+      'work.expand': 'Show work',
+      'work.collapse': 'Hide work',
       'reply.placeholder': 'Message this Codex session…',
       'reply.send': 'Send',
       'reply.sending': 'Sending…',
@@ -182,6 +192,15 @@ window.__ModuleLoader__.load({
       if (!seconds) return '--:--'
       const d = new Date(seconds * 1000)
       return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+    }
+    /** 时长照 Codex 的写法：「6分钟29秒」。不足一分钟只说秒。 */
+    const elapsed = (ms) => {
+      if (!ms || ms < 0) return null
+      const total = Math.round(ms / 1000)
+      if (total < 60) return `${total} 秒`
+      const m = Math.floor(total / 60)
+      const s = total % 60
+      return s === 0 ? `${m} 分钟` : `${m} 分钟 ${s} 秒`
     }
     const STATE_TOKEN = {
       running: 'business',
@@ -376,6 +395,24 @@ window.__ModuleLoader__.load({
   font-variant-numeric:tabular-nums}
 
 /* action: a quiet disclosure-style row, like a tool line in the native flow */
+/* 中间过程折叠块：平时只有一行「用时 X ›」，和 Codex 的显示一致。 */
+.cxm-work{display:flex;flex-direction:column;gap:6px;min-width:0}
+.cxm-work-head{display:inline-flex;align-items:center;gap:4px;align-self:flex-start;
+  border:0;background:none;padding:2px 0;cursor:pointer;
+  color:var(--dsw-alias-label-tertiary);font-family:inherit;
+  font-size:12px;line-height:18px;border-radius:var(--dsw-radius-sm)}
+.cxm-work-head:hover{color:var(--dsw-alias-label-secondary)}
+.cxm-work-head:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
+  outline-offset:2px}
+.cxm-work-chevron{display:inline-flex;transition:transform .15s var(--ds-ease-in-out)}
+.cxm-work[data-open='true'] .cxm-work-chevron{transform:rotate(90deg)}
+.cxm-work-body{display:flex;flex-direction:column;gap:6px;
+  padding-left:10px;border-left:1.5px solid var(--dsw-alias-border-l1);min-width:0}
+/* 展开后里面的阶段性说明用次要色，和最终答复区分开。 */
+.cxm-work-say{color:var(--dsw-alias-label-secondary);
+  font-size:var(--dsh-content-font-size,14px);
+  line-height:calc(22px + var(--dsh-content-font-delta,0px));
+  overflow-wrap:anywhere;min-width:0}
 .cxm-action{display:flex;gap:8px;align-items:baseline;min-width:0;
   color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .cxm-action b{font-weight:400;color:var(--dsw-alias-label-tertiary);flex:none}
@@ -1166,7 +1203,58 @@ window.__ModuleLoader__.load({
     }
 
     /** One transcript entry: a message bubble, or a collapsed action line. */
+    /**
+     * 一轮里的中间过程：默认收起，只露一行「用时 X」，点开才看到命令和阶段说明。
+     * Codex 就是这么显示的——正文留给最终答复，过程收进可展开的一行。
+     */
+    function WorkBlock({ t, entry }) {
+      const [open, setOpen] = useState(false)
+      const rows = entry.entries ?? []
+      const time = elapsed(entry.durationMs)
+      const label = time ? t('work.elapsed', { time }) : t('work.steps', { n: rows.length })
+      return h(
+        'div',
+        { className: 'cxm-work', 'data-open': open ? 'true' : 'false' },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'cxm-work-head',
+            'aria-expanded': open ? 'true' : 'false',
+            'aria-label': open ? t('work.collapse') : t('work.expand'),
+            onClick: () => setOpen((v) => !v),
+          },
+          h('span', { className: 'cxm-work-time' }, label),
+          h('span', { className: 'cxm-work-chevron' }, ChevronGlyph()),
+        ),
+        open
+          ? h(
+              'div',
+              { className: 'cxm-work-body' },
+              rows.map((row, index) =>
+                row.role === 'action'
+                  ? h(
+                      'div',
+                      { key: index, className: 'cxm-action' },
+                      h('b', null, row.label),
+                      h('span', { className: 'cxm-cmd', title: row.text }, row.text),
+                      (row.count ?? 1) > 1
+                        ? h('span', { className: 'cxm-run' }, t('chat.actionRun', { n: row.count }))
+                        : null,
+                    )
+                  : h(
+                      'div',
+                      { key: index, className: 'cxm-work-say' },
+                      renderMarkdown(row.text, h, 'agent'),
+                    ),
+              ),
+            )
+          : null,
+      )
+    }
+
     function Entry({ t, entry }) {
+      if (entry.role === 'work') return h(WorkBlock, { t, entry })
       if (entry.role === 'action') {
         const run = entry.count ?? 1
         return h(
