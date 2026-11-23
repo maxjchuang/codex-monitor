@@ -159,6 +159,9 @@ const statusPayload = {
         { role: 'action', at: 1795431025, label: '执行命令', text: 'npm test', count: 9,
           lastLabel: '执行命令', lastText: 'npm test' },
       ] },
+      // Codex 发的图走 Markdown 图片语法，后端已把路径换成 data URL。
+      { role: 'agent', at: 1795431028, final: true,
+        text: '截图如下：\n\n![勾选态](data:image/png;base64,iVBORw0KGgo=)\n\n还有一张读不到的：\n\n![坏图](/nope/missing.png)' },
       { role: 'agent', at: 1795431030, text: '要不要删除空白子记录？',
         final: true, questions: sessions[0].questions },
     ],
@@ -302,6 +305,11 @@ function walk(node, at) {
     shotCount += 1
     if (parentClass === 'cxm-bubble') shotInsideBubble += 1
   }
+  // 正文里的 Markdown 图单独统计，别和附件缩略图混在一起。
+  if (node.type === 'img' && node.props?.className === 'cxm-md-img') {
+    globalThis.__mdImgs = globalThis.__mdImgs ?? []
+    globalThis.__mdImgs.push(node.props.src)
+  }
   if (node.type === 'textarea') {
     textareaDisabled = node.props?.disabled === true
   }
@@ -350,6 +358,8 @@ function renderOnce() {
   texts.length = 0
   classes.length = 0
   clickables.length = 0
+  // 每次重渲染都要从头数，否则多次 walk 会把同一张图累计好几次。
+  globalThis.__mdImgs = []
   listOpenAttr = null
   drawerAttr = null
   path = ''
@@ -386,6 +396,9 @@ const checks = [
   ['styles injected into document.head (badge survives unmount)',
     headChildren.some((el) => el['data-plugin-css'] === 'codex-monitor' && el.textContent.includes('.cxm-page'))],
   ['attached image renders as an img', shotCount >= 1],
+  ['markdown image from Codex renders as an img', mdImages() === 1],
+  ['unreadable markdown image degrades to its alt text',
+    joined.includes('坏图') && !joined.includes('/nope/missing.png')],
   ['attached image sits outside the bubble', shotInsideBubble === 0],
   ['left pane title translated', joined.includes('会话')],
   ['counts interpolated', joined.includes('3 个会话 · 1 正在跑 · 1 等你回复')],
@@ -472,6 +485,11 @@ function refresh_is_icon_button() {
 
 // ── work block ────────────────────────────────────────────────────────────────
 // 点「用时」那一行要能把过程展开，再点收回去。
+// 正文里的 Markdown 图用 .cxm-md-img，和附件缩略图 .cxm-shot 分开统计。
+function mdImages() {
+  return (globalThis.__mdImgs ?? []).length
+}
+
 function work_expands() {
   const head = clickables.find((b) => b.cls.includes('cxm-work-head'))
   if (!head) return false

@@ -4,6 +4,7 @@
 运行：python3 -m unittest discover -s tests -v
 """
 
+import base64
 import os
 import sqlite3
 import sys
@@ -684,6 +685,85 @@ class TestDeliveryKeepsProcessAlive(TempDbs):
             c.deliver_async("t1", "hi", on_done=lambda r: (seen.update(r), done.set()))
         self.assertTrue(done.wait(5))
         self.assertEqual(seen["status"], "completed")
+
+
+class TestMarkdownImages(TempDbs):
+    """Codex 发给用户的图写在正文里，是 Markdown 图片 + 本机绝对路径。
+
+    浏览器打不开 file:// 路径，所以后端要把这些路径换成 data URL，
+    否则界面上就是一张裂图，用户完全看不到 Codex 截给他的东西。
+    """
+
+    def test_absolute_path_becomes_a_data_url(self):
+        with tempfile.TemporaryDirectory() as d:
+            png = _tiny_png()
+            path = os.path.join(d, "shot.png")
+            with open(path, "wb") as handle:
+                handle.write(png)
+            out = c.inline_markdown_images(f"看图：\n\n![说明]({path})\n")
+        self.assertIn("data:image/png;base64,", out)
+        self.assertIn("![说明]", out)
+        self.assertNotIn(path, out)
+
+    def test_missing_file_is_left_alone(self):
+        """读不到的路径原样留着，前端会降级成说明文字，而不是变成裂图。"""
+        text = "![坏图](/nope/missing.png)"
+        self.assertEqual(c.inline_markdown_images(text), text)
+
+    def test_relative_paths_are_not_resolved(self):
+        """相对路径没法确定基准目录，乱猜会指向错误的文件。
+
+        必须断言「压根没去读文件」，只比对输出看不出来——读不到时输出也一样。
+        """
+        with mock.patch.object(c, "image_data_url") as spy:
+            c.inline_markdown_images("![x](./local.png)")
+        spy.assert_not_called()
+
+    def test_text_without_images_is_untouched(self):
+        text = "没有图片的一段话，带 [链接](https://example.com)。"
+        self.assertEqual(c.inline_markdown_images(text), text)
+
+    def test_remote_urls_are_left_for_the_browser(self):
+        text = "![x](https://example.com/a.png)"
+        self.assertEqual(c.inline_markdown_images(text), text)
+
+    def test_several_images_in_one_message(self):
+        with tempfile.TemporaryDirectory() as d:
+            paths = []
+            for i in range(3):
+                path = os.path.join(d, f"s{i}.png")
+                with open(path, "wb") as handle:
+                    handle.write(_tiny_png())
+                paths.append(path)
+            text = "\n".join(f"![图{i}]({p})" for i, p in enumerate(paths))
+            out = c.inline_markdown_images(text)
+        self.assertEqual(out.count("data:image/png;base64,"), 3)
+
+    def test_transcript_converts_agent_images(self):
+        """接进 transcript 之后才真的生效——单独的函数对了没用。"""
+        tid = "01a2cccc-0000-7000-8000-000000000001"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "shot.png")
+            with open(path, "wb") as handle:
+                handle.write(_tiny_png())
+            self.add_thread(tid, "带图的会话")
+            self.add_item(tid, "agentMessage",
+                          {"type": "agentMessage", "id": "m1",
+                           "text": f"截图：\n\n![勾选态]({path})",
+                           "phase": "final_answer"}, 2000)
+            chat = c.transcript(tid, limit=10)
+        texts = [e.get("text") or "" for e in chat["entries"]]
+        joined = "\n".join(texts)
+        self.assertIn("data:image/png;base64,", joined)
+        self.assertNotIn(path, joined)
+
+
+def _tiny_png():
+    """最小的合法 PNG（1x1 透明）。"""
+    return base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+        "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
 
 
 class TestImages(TempDbs):

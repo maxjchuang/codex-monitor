@@ -521,6 +521,10 @@ window.__ModuleLoader__.load({
 .cxm-shot:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color);
   outline-offset:1px}
 /* 全屏看图：铺满视口，点任意处或 Esc 关掉。 */
+.cxm-md-img{display:block;max-width:100%;height:auto;margin:8px 0;
+  border-radius:var(--dsw-radius-lg,16px);cursor:zoom-in;
+  border:1px solid var(--dsw-alias-border-l2-darkmode-thin)}
+.cxm-md-img-missing{color:var(--dsw-alias-label-tertiary);font-size:13px}
 .cxm-zoom{position:fixed;inset:0;z-index:2147483000;display:flex;
   align-items:center;justify-content:center;padding:32px;cursor:zoom-out;
   background:rgba(0,0,0,.72);backdrop-filter:blur(2px)}
@@ -963,7 +967,7 @@ window.__ModuleLoader__.load({
     const SAFE_SCHEMES = /^(https?:|mailto:)/i
 
     /** Inline spans: code, bold, italic, strikethrough, links. */
-    function renderInline(text, keyPrefix, h) {
+    function renderInline(text, keyPrefix, h, onZoom = null) {
       const out = []
       let rest = text
       let n = 0
@@ -978,6 +982,32 @@ window.__ModuleLoader__.load({
           rest = rest.slice(m[0].length)
           continue
         }
+        // Markdown images: ![alt](src). Codex sends screenshots this way, with the path
+        // already turned into a data URL by the backend. Must be checked before the
+        // link rule, otherwise the leading ! is swallowed and the image never shows.
+        m = /^!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(rest)
+        if (m) {
+          const src = m[2]
+          if (/^(data:image\/|https?:)/i.test(src)) {
+            push(
+              h('img', {
+                key: key(),
+                className: 'cxm-md-img',
+                src,
+                alt: m[1],
+                loading: 'lazy',
+                onClick: onZoom ? () => onZoom(src) : undefined,
+              }),
+            )
+          } else {
+            // 路径读不到（图被删了、或者不在本机），别渲染成碎图标，说明白。
+            push(
+              h('span', { key: key(), className: 'cxm-md-img-missing' }, m[1] || '图片'),
+            )
+          }
+          rest = rest.slice(m[0].length)
+          continue
+        }
         // Links: [label](href)
         m = /^\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/.exec(rest)
         if (m) {
@@ -987,32 +1017,32 @@ window.__ModuleLoader__.load({
               h(
                 'a',
                 { key: key(), className: 'cxm-md-link', href, target: '_blank', rel: 'noreferrer noopener' },
-                ...renderInline(m[1], key(), h),
+                ...renderInline(m[1], key(), h, onZoom),
               ),
             )
           } else {
             // A javascript:/data: link keeps its label but is not made clickable.
-            push(h('span', { key: key() }, ...renderInline(m[1], key(), h)))
+            push(h('span', { key: key() }, ...renderInline(m[1], key(), h, onZoom)))
           }
           rest = rest.slice(m[0].length)
           continue
         }
         m = /^\*\*([\s\S]+?)\*\*/.exec(rest)
         if (m) {
-          push(h('strong', { key: key() }, ...renderInline(m[1], key(), h)))
+          push(h('strong', { key: key() }, ...renderInline(m[1], key(), h, onZoom)))
           rest = rest.slice(m[0].length)
           continue
         }
         m = /^~~([\s\S]+?)~~/.exec(rest)
         if (m) {
-          push(h('del', { key: key() }, ...renderInline(m[1], key(), h)))
+          push(h('del', { key: key() }, ...renderInline(m[1], key(), h, onZoom)))
           rest = rest.slice(m[0].length)
           continue
         }
         // Single-char emphasis, but not the `*` of a `**` run that failed above.
         m = /^\*([^*\n]+)\*/.exec(rest)
         if (m) {
-          push(h('em', { key: key() }, ...renderInline(m[1], key(), h)))
+          push(h('em', { key: key() }, ...renderInline(m[1], key(), h, onZoom)))
           rest = rest.slice(m[0].length)
           continue
         }
@@ -1042,7 +1072,7 @@ window.__ModuleLoader__.load({
     const isTableDivider = (line) => /^\s*\|?[\s:-]*-[\s:|-]*\|?\s*$/.test(line) && line.includes('-')
 
     /** Parse a block of Markdown into block-level React nodes. */
-    function renderBlocks(source, keyPrefix, h) {
+    function renderBlocks(source, keyPrefix, h, onZoom = null) {
       const lines = source.replace(/\r\n?/g, '\n').split('\n')
       const blocks = []
       let i = 0
@@ -1084,7 +1114,7 @@ window.__ModuleLoader__.load({
         const head = /^\s*(#{1,6})\s+(.*)$/.exec(line)
         if (head) {
           const level = Math.min(head[1].length + 2, 6) // keep headings modest in a chat pane
-          blocks.push(h(`h${level}`, { key: key(), className: 'cxm-md-h' }, ...renderInline(head[2].trim(), key(), h)))
+          blocks.push(h(`h${level}`, { key: key(), className: 'cxm-md-h' }, ...renderInline(head[2].trim(), key(), h, onZoom)))
           i += 1
           continue
         }
@@ -1104,7 +1134,7 @@ window.__ModuleLoader__.load({
             i += 1
           }
           blocks.push(
-            h('blockquote', { key: key(), className: 'cxm-md-quote' }, ...renderBlocks(body.join('\n'), key(), h)),
+            h('blockquote', { key: key(), className: 'cxm-md-quote' }, ...renderBlocks(body.join('\n'), key(), h, onZoom)),
           )
           continue
         }
@@ -1131,7 +1161,7 @@ window.__ModuleLoader__.load({
                   h(
                     'tr',
                     null,
-                    header.map((cell, c) => h('th', { key: c }, ...renderInline(cell, `${key()}:h${c}`, h))),
+                    header.map((cell, c) => h('th', { key: c }, ...renderInline(cell, `${key()}:h${c}`, h, onZoom))),
                   ),
                 ),
                 h(
@@ -1142,7 +1172,7 @@ window.__ModuleLoader__.load({
                       'tr',
                       { key: r },
                       header.map((_, c) =>
-                        h('td', { key: c }, ...renderInline(row[c] ?? '', `${key()}:r${r}c${c}`, h)),
+                        h('td', { key: c }, ...renderInline(row[c] ?? '', `${key()}:r${r}c${c}`, h, onZoom)),
                       ),
                     ),
                   ),
@@ -1189,7 +1219,7 @@ window.__ModuleLoader__.load({
                 ordered ? 'ol' : 'ul',
                 { key: key(), className: 'cxm-md-list' },
                 group.map((it, idx) =>
-                  h('li', { key: idx }, ...renderInline(it.text, `${key()}:li${idx}`, h)),
+                  h('li', { key: idx }, ...renderInline(it.text, `${key()}:li${idx}`, h, onZoom)),
                 ),
               ),
             )
@@ -1207,7 +1237,7 @@ window.__ModuleLoader__.load({
           i += 1
         }
         if (para.length > 0) {
-          blocks.push(h('p', { key: key(), className: 'cxm-md-p' }, ...renderInline(para.join(' '), key(), h)))
+          blocks.push(h('p', { key: key(), className: 'cxm-md-p' }, ...renderInline(para.join(' '), key(), h, onZoom)))
         } else {
           i += 1 // guard against a line that matched nothing
         }
@@ -1221,8 +1251,8 @@ window.__ModuleLoader__.load({
      * @param h - React.createElement.
      * @param keyPrefix - stable prefix for keys.
      */
-    function renderMarkdown(text, h, keyPrefix = 'md') {
-      return renderBlocks(text, keyPrefix, h)
+    function renderMarkdown(text, h, keyPrefix = 'md', onZoom = null) {
+      return renderBlocks(text, keyPrefix, h, onZoom)
     }
 
     /** One row in the left list. Selecting it drives the conversation pane. */
@@ -1454,6 +1484,8 @@ window.__ModuleLoader__.load({
      */
     function WorkBlock({ t, entry }) {
       const [open, setOpen] = useState(false)
+      // 折叠块里的正文同样可能带图，点开也要能放大。
+      const [zoom, setZoom] = useState(null)
       const rows = entry.entries ?? []
       const time = elapsed(entry.durationMs)
       const label = time ? t('work.elapsed', { time }) : t('work.steps', { n: rows.length })
@@ -1490,9 +1522,27 @@ window.__ModuleLoader__.load({
                   : h(
                       'div',
                       { key: index, className: 'cxm-work-say' },
-                      renderMarkdown(row.text, h, 'agent'),
+                      renderMarkdown(row.text, h, 'agent', setZoom),
                     ),
               ),
+            )
+          : null,
+        zoom
+          ? h(
+              'div',
+              {
+                key: 'zoom',
+                className: 'cxm-zoom',
+                role: 'dialog',
+                'aria-modal': 'true',
+                'aria-label': t('chat.imageAlt', { n: 1 }),
+                tabIndex: 0,
+                onClick: () => setZoom(null),
+                onKeyDown: (event) => {
+                  if (event.key === 'Escape') setZoom(null)
+                },
+              },
+              h('img', { className: 'cxm-zoom-img', src: zoom, alt: '' }),
             )
           : null,
       )
@@ -1557,7 +1607,7 @@ window.__ModuleLoader__.load({
               { className: 'cxm-bubble' },
               // Codex replies in Markdown; the user's own text stays literal, since it is
               // whatever they typed and reinterpreting it as markup would be surprising.
-              entry.text ? (mine ? entry.text : renderMarkdown(entry.text, h, 'agent')) : null,
+              entry.text ? (mine ? entry.text : renderMarkdown(entry.text, h, 'agent', setZoom)) : null,
             )
           : null,
         entry.questions && entry.questions.length > 0

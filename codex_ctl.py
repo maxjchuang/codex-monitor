@@ -323,6 +323,33 @@ def image_data_url(path, rollout_path=None):
     return url
 
 
+# Codex 给你发图的方式是在正文里写 Markdown 图片，路径是本机绝对路径：
+#   ![说明](/Users/.../shot.png)
+# 浏览器打不开 file:// 路径，所以要把这些路径换成 data URL。
+MD_IMAGE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+
+
+def inline_markdown_images(text, rollout_path=None):
+    """把正文里指向本机文件的 Markdown 图片换成 data URL。
+
+    只换真的读得到、而且确实是图片的路径。换不了的原样留着，前端会退化成
+    一个「打不开的图」而不是静默消失——用户至少知道 Codex 发了张图。
+    """
+    if not text or "![" not in text:
+        return text
+
+    def swap(match):
+        alt, path = match.group(1), match.group(2)
+        if not os.path.isabs(path):
+            return match.group(0)
+        url = image_data_url(path, rollout_path)
+        if not url:
+            return match.group(0)
+        return f"![{alt}]({url})"
+
+    return MD_IMAGE.sub(swap, text)
+
+
 def remember_image(key, url):
     if len(_IMAGE_CACHE) >= _IMAGE_CACHE_MAX:
         _IMAGE_CACHE.clear()
@@ -541,11 +568,14 @@ def transcript(thread_id, limit=200, scan_limit=4000, before=None):
     # 都解一遍既慢又占内存，而裁掉的那些根本不会显示。
     for entry in out:
         paths = entry.pop("images", None)
-        if not paths:
-            continue
-        urls = [url for url in (image_data_url(p, rollout) for p in paths) if url]
-        if urls:
-            entry["images"] = urls
+        if paths:
+            urls = [url for url in (image_data_url(p, rollout) for p in paths) if url]
+            if urls:
+                entry["images"] = urls
+        # Codex 发给用户的图写在正文里（Markdown 图片 + 本机绝对路径），
+        # 和上面那种「用户附的图」是两条路径，得分别处理。
+        if entry.get("role") == "agent" and entry.get("text"):
+            entry["text"] = inline_markdown_images(entry["text"], rollout)
 
     grouped = group_turns(out, turn_spans(thread_id))
     kept = trim_turns(grouped, limit)

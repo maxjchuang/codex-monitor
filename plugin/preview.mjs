@@ -38,6 +38,12 @@ function mdToHtml(text) {
     const cls = node.props?.className ? ` class="${node.props.className}"` : ''
     if (t === 'a') return `<a${cls} href="${esc(node.props.href)}">${inner}</a>`
     if (t === 'pre') return `<pre${cls}><code>${inner}</code></pre>`
+    // 图片的地址在 props 里，不在 children 里，默认分支会漏掉 src。
+    if (t === 'img') {
+      const src = node.props?.src ?? ''
+      const alt = esc(node.props?.alt ?? '')
+      return `<img${cls} src="${esc(src)}" alt="${alt}">`
+    }
     if (t === 'div') return `<div${cls}>${inner}</div>`
     return `<${t}${cls}>${inner}</${t}>`
   }
@@ -260,6 +266,13 @@ const SHOT = (() => {
   }
 })()
 
+// Codex 发的图走 Markdown 图片语法，后端把本机路径换成 data URL 再交给前端。
+const agentShot = `改好了，截图如下：
+
+![附件列的两个图标](${SHOT})
+
+加号已换成小叉图标。`
+
 const htmlPath = `/tmp/cxm-preview-${variant}.html`
 
 const html = `<!doctype html><meta charset="utf-8"><style>
@@ -317,6 +330,9 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
         <div class="cxm-msg" data-role="user">
           <div class="cxm-bubble">删掉吧，保留正式记录就行。</div>
           <div class="cxm-stamp">18:53</div>
+        </div>
+        <div class="cxm-msg" data-role="agent">
+          <div class="cxm-bubble">${mdToHtml(agentShot)}</div>
         </div>
         <div class="cxm-msg" data-role="agent">
           <div class="cxm-bubble">好，我删掉临时记录。</div>
