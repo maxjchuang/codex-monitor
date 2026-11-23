@@ -35,6 +35,10 @@ class TempDbs(unittest.TestCase):
             "create table thread_turns (thread_id text, turn_id text, status text, "
             "started_at integer, completed_at integer, duration_ms integer)"
         )
+        conn.execute(
+            "create table thread_history_projection_state (thread_id text, "
+            "next_rollout_byte_offset integer, next_rollout_ordinal integer)"
+        )
         conn.commit()
         conn.close()
 
@@ -375,6 +379,95 @@ class TestThreadLocked(TempDbs):
         with mock.patch.object(c, "thread_locked", return_value=True):
             data = c.build_status(srv, "01a2aaaa-0000-7000-8000-000000000003", 1, 5)
         self.assertIs(data.get("locked"), True)
+
+
+class TestStalledProjection(TempDbs):
+    """Codex 的投影器会卡住，历史库追不上 rollout，最后几轮对话就看不见了。
+
+    Faster Agent 那个会话就是：rollout 被压缩重写后只有 2.1MB，但投影游标还停在
+    21MB，于是它永远找不到新记录，缺了 5 轮对话（包括最后的答复）。
+    """
+
+    def _rollout(self, directory, entries):
+        path = os.path.join(directory, "rollout.jsonl")
+        with open(path, "w", encoding="utf-8") as handle:
+            for ordinal, (kind, text, at_ms) in enumerate(entries):
+                item = {"type": kind, "id": f"i{ordinal}"}
+                if kind == "UserMessage":
+                    item["content"] = [{"type": "text", "text": text}]
+                else:
+                    item["content"] = [{"type": "Text", "text": text}]
+                handle.write(json.dumps({
+                    "ordinal": ordinal,
+                    "type": "event_msg",
+                    "payload": {"type": "item_completed", "item": item,
+                                "completed_at_ms": at_ms},
+                }, ensure_ascii=False) + "\n")
+        return path
+
+    def _set_cursor(self, thread_id, offset):
+        conn = sqlite3.connect(c.HIST_DB)
+        conn.execute("delete from thread_history_projection_state where thread_id=?", (thread_id,))
+        conn.execute(
+            "insert into thread_history_projection_state "
+            "(thread_id, next_rollout_byte_offset, next_rollout_ordinal) values (?,?,?)",
+            (thread_id, offset, 0),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_stall_is_detected_when_cursor_passes_the_file(self):
+        tid = "01a2cccc-0000-7000-8000-000000000001"
+        with tempfile.TemporaryDirectory() as d:
+            path = self._rollout(d, [("UserMessage", "你好", 1000)])
+            self.add_thread(tid, "卡住的会话", rollout_path=path)
+            size = os.path.getsize(path)
+            # 正常情况：游标 == 文件大小，不算卡住。
+            self._set_cursor(tid, size)
+            self.assertFalse(c.projection_stalled(tid, path))
+            # 卡住：游标远大于文件（rollout 被压缩重写过）。
+            self._set_cursor(tid, size * 10)
+            self.assertTrue(c.projection_stalled(tid, path))
+
+    def test_missing_tail_is_read_back_from_the_rollout(self):
+        tid = "01a2cccc-0000-7000-8000-000000000002"
+        with tempfile.TemporaryDirectory() as d:
+            path = self._rollout(d, [
+                ("UserMessage", "第一问", 1000),
+                ("AgentMessage", "第一答", 2000),
+                ("UserMessage", "第二问", 5000),
+                ("AgentMessage", "第二答", 6000),
+            ])
+            self.add_thread(tid, "卡住的会话", rollout_path=path)
+            # 历史库里只投影到第一轮。
+            self.add_item(tid, "userMessage", {
+                "type": "userMessage", "id": "m1",
+                "content": [{"type": "text", "text": "第一问"}],
+            }, 1000)
+            self.add_item(tid, "agentMessage", {
+                "type": "agentMessage", "id": "m2", "text": "第一答", "phase": "final_answer",
+            }, 2000)
+            self._set_cursor(tid, os.path.getsize(path) * 10)
+            entries = c.transcript(tid, 20)["entries"]
+        texts = [e["text"] for e in entries]
+        self.assertIn("第二问", texts)
+        self.assertIn("第二答", texts)
+        # 已有的不能被重复塞一遍。
+        self.assertEqual(texts.count("第一问"), 1)
+
+    def test_healthy_session_does_not_read_the_rollout(self):
+        """没卡住时不该去扫 rollout：那是几万行、几十 MB 的文件。"""
+        tid = "01a2cccc-0000-7000-8000-000000000003"
+        with tempfile.TemporaryDirectory() as d:
+            path = self._rollout(d, [("UserMessage", "只有这条", 1000)])
+            self.add_thread(tid, "正常会话", rollout_path=path)
+            self.add_item(tid, "userMessage", {
+                "type": "userMessage", "id": "m1",
+                "content": [{"type": "text", "text": "只有这条"}],
+            }, 1000)
+            self._set_cursor(tid, os.path.getsize(path))
+            entries = c.transcript(tid, 20)["entries"]
+        self.assertEqual([e["text"] for e in entries], ["只有这条"])
 
 
 class TestImages(TempDbs):

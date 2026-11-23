@@ -368,6 +368,88 @@ def rollout_image(rollout_path, path):
     return None
 
 
+def projection_stalled(thread_id, rollout_path):
+    """Codex 的历史投影是不是卡住了。
+
+    正常情况下投影游标就等于 rollout 文件的字节数——每个会话都精确相等。但如果
+    rollout 被压缩重写过（Faster Agent 那个会话就是），游标会远大于文件大小，
+    投影器按旧偏移找不到新记录，于是永远停在那儿，历史库再也追不上 rollout。
+    这种情况下只能自己去 rollout 里把后面的对话补出来。
+    """
+    if not rollout_path or not os.path.exists(rollout_path):
+        return False
+    conn = db(HIST_DB)
+    if not conn:
+        return False
+    try:
+        row = conn.execute(
+            "select next_rollout_byte_offset from thread_history_projection_state "
+            "where thread_id=?", (thread_id,)
+        ).fetchone()
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+    if not row or row["next_rollout_byte_offset"] is None:
+        return False
+    try:
+        size = os.path.getsize(rollout_path)
+    except OSError:
+        return False
+    return row["next_rollout_byte_offset"] > size
+
+
+def rollout_entries(rollout_path):
+    """从 rollout 里读出用户和 Codex 说过的话，形状和 transcript 的条目一致。"""
+    out = []
+    if not rollout_path or not os.path.exists(rollout_path):
+        return out
+    try:
+        handle = open(rollout_path, encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    with handle:
+        for line in handle:
+            if "item_completed" not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = record.get("payload") or {}
+            if payload.get("type") != "item_completed":
+                continue
+            item = payload.get("item") or {}
+            kind = item.get("type")
+            at = (payload.get("completed_at_ms") or payload.get("started_at_ms") or 0) / 1000
+            if not at:
+                continue
+            if kind == "UserMessage":
+                content = item.get("content") or []
+                text = " ".join(
+                    seg.get("text", "") for seg in content if seg.get("type") == "text"
+                ).strip()
+                text = strip_attachment_preamble(text)
+                images = [seg.get("path") for seg in content
+                          if seg.get("type") == "localImage" and seg.get("path")]
+                if text or images:
+                    entry = {"role": "user", "at": at, "text": text, "id": item.get("id")}
+                    if images:
+                        entry["images"] = images
+                    out.append(entry)
+            elif kind == "AgentMessage":
+                text = " ".join(
+                    seg.get("text", "") for seg in item.get("content") or []
+                    if seg.get("type") == "Text"
+                ).strip()
+                if text:
+                    out.append({
+                        "role": "agent", "at": at, "text": text,
+                        "final": True, "id": item.get("id"), "questions": None,
+                    })
+    return out
+
+
 def transcript(thread_id, limit=200, scan_limit=4000, before=None):
     """按时间正序返回一段对话，供聊天窗口渲染。
 
@@ -446,9 +528,17 @@ def transcript(thread_id, limit=200, scan_limit=4000, before=None):
 
     # 先分组再裁剪：先 trim 会把一轮切碎（结尾那几十条命令占满了窗口，
     # 用户的提问和最终答复反而被挤掉），而且 work 块也就没法成立。
+    rollout = rollout_path_for(thread_id)
+    # 投影卡住时，历史库缺的是最后那几轮对话——正是用户最想看的。用 rollout 补上。
+    if not before and projection_stalled(thread_id, rollout):
+        newest = max((r["created_at_ms"] for r in rows), default=0)
+        for entry in rollout_entries(rollout):
+            if entry["at"] * 1000 > newest:
+                out.append(entry)
+        out.sort(key=lambda e: e["at"])
+
     # 图片只在真正要返回的条目上解析：一条消息的 base64 能有 2MB，给整页
     # 都解一遍既慢又占内存，而裁掉的那些根本不会显示。
-    rollout = rollout_path_for(thread_id)
     for entry in out:
         paths = entry.pop("images", None)
         if not paths:
