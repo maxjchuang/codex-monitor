@@ -662,17 +662,17 @@ class TestDeliveryKeepsProcessAlive(TempDbs):
             release.wait(5)
             return {"delivered": True, "status": "completed", "error": None}
 
-        with mock.patch.object(c, "deliver_and_release", side_effect=slow):
+        # 默认走脱离父进程的独立进程，spawn 本身必须是瞬时的。
+        def fake_detached(*a, **k):
+            started.append(True)
+            return object()
+
+        with mock.patch.object(c, "deliver_detached", side_effect=fake_detached):
             t0 = time.time()
             c.deliver_async("t1", "hello")
             elapsed = time.time() - t0
         self.assertLess(elapsed, 1.0, "投递不能阻塞调用方")
-        release.set()
-        for _ in range(50):
-            if started:
-                break
-            time.sleep(0.02)
-        self.assertTrue(started)
+        self.assertTrue(started, "投递要真的被发出去")
 
     def test_async_reports_the_result_to_the_callback(self):
         done = threading.Event()
@@ -780,6 +780,87 @@ class TestSubagentCompletionIsNotTheEnd(TempDbs):
         )
         got = srv.wait_notification("turn/completed", 1, thread_id="main-1", turn_id="t-main")
         self.assertEqual(got["turn"]["id"], "t-main")
+
+
+class TestDeliveryOutlivesTheServer(TempDbs):
+    """投递必须活过 serve 重启。
+
+    任务的命挂在 app-server 上，而 app-server 是 serve 的子进程。serve 一被
+    SIGTERM（插件重载、DSH 重启、手动重启），整棵子进程树跟着退，stdio 管道
+    断掉，Codex 立刻把在飞的轮次记成 interrupted。实测：杀投递进程 9.4 秒后
+    轮次变 interrupted，duration_ms 9399，和真实数据里那条一模一样。
+
+    修法是 start_new_session=True，让投递进程脱离 serve 的会话和进程组。
+    """
+
+    def test_delivery_starts_in_its_own_session(self):
+        captured = {}
+
+        def fake_popen(argv, **kwargs):
+            captured.update(kwargs)
+            captured["argv"] = argv
+
+            class P:
+                pid = 4242
+                class stdin:
+                    @staticmethod
+                    def write(_): pass
+                    @staticmethod
+                    def close(): pass
+            return P()
+
+        with mock.patch.object(c.subprocess, "Popen", fake_popen):
+            c.deliver_detached("t-1", "do something")
+        self.assertTrue(captured.get("start_new_session"),
+                        "投递进程必须脱离父进程的会话，否则 serve 一退任务就断")
+
+    def test_the_message_goes_through_stdin_not_argv(self):
+        """消息里有换行和引号，走命令行会被 shell 和长度限制坑到。"""
+        captured = {}
+
+        class FakeStdin:
+            def __init__(self): self.written = None
+            def write(self, v): self.written = v
+            def close(self): pass
+
+        def fake_popen(argv, **kwargs):
+            captured["argv"] = argv
+            captured["stdin"] = FakeStdin()
+
+            class P:
+                pid = 4242
+                stdin = captured["stdin"]
+            return P()
+
+        msg = "第一行\n第二行 带 \"引号\" 和 '单引号'"
+        with mock.patch.object(c.subprocess, "Popen", fake_popen):
+            c.deliver_detached("t-1", msg)
+        self.assertEqual(captured["stdin"].written, msg)
+        self.assertNotIn(msg, " ".join(captured["argv"]))
+
+    def test_detached_is_the_default(self):
+        """默认就该脱离；只有调用方明确要回调时才退回线程内投递。"""
+        called = {}
+        with mock.patch.object(c, "deliver_detached",
+                               lambda tid, msg, timeout=None: called.setdefault("detached", (tid, msg))):
+            with mock.patch.object(c, "deliver_and_release",
+                                   lambda *a, **k: called.setdefault("inline", a)):
+                c.deliver_async("t-1", "hello")
+        self.assertIn("detached", called)
+        self.assertNotIn("inline", called)
+
+    def test_on_done_still_uses_the_thread(self):
+        """要回调的场合调用方本来就在等结果，进程活着是前提。"""
+        called = {}
+        with mock.patch.object(c, "deliver_detached",
+                               lambda *a, **k: called.setdefault("detached", True)):
+            with mock.patch.object(c, "deliver_and_release",
+                                   lambda tid, msg, **k: {"delivered": True}):
+                got = {}
+                t = c.deliver_async("t-1", "hello", on_done=lambda r: got.update(r))
+                t.join(timeout=5)
+        self.assertNotIn("detached", called)
+        self.assertTrue(got.get("delivered"))
 
 
 class TestMarkdownImages(TempDbs):

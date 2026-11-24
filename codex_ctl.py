@@ -1218,16 +1218,56 @@ def deliver_and_release(thread_id, message, timeout=DELIVER_TURN_TIMEOUT):
         srv.close()
 
 
+def deliver_detached(thread_id, message, timeout=DELIVER_TURN_TIMEOUT):
+    """把投递交给一个脱离当前进程的独立进程，立刻返回它的 pid。
+
+    为什么不能只在 serve 里起个线程：任务的命挂在 app-server 上，而 app-server
+    是 serve 的子进程。serve 一被 SIGTERM（插件重载、DSH 重启、手动重启服务），
+    它的整棵子进程树跟着退，app-server 的 stdio 管道断掉，Codex 立刻把在飞的轮次
+    记成 interrupted——用户看到的就是「派完活，任务自己停了」。实测：杀掉投递进程
+    9.4 秒后轮次变 interrupted，duration_ms 9399。
+
+    start_new_session=True 让子进程脱离 serve 的会话和进程组，serve 被杀时它收不到
+    信号、也不在同一个进程组里被连带清理，任务能继续跑完。
+    """
+    code = (
+        "import json, sys;"
+        "import codex_ctl as c;"
+        f"r = c.deliver_and_release({thread_id!r}, sys.stdin.read(), timeout={int(timeout)});"
+        "print(json.dumps(r))"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        proc.stdin.write(message)
+        proc.stdin.close()
+    except Exception:
+        pass
+    return proc
+
+
 def deliver_async(thread_id, message, on_done=None):
-    """把投递丢到后台，HTTP 立刻返回，任务继续跑。"""
+    """把投递丢出去，HTTP 立刻返回，任务继续跑。
+
+    默认走脱离父进程的独立进程（见 deliver_detached），这样 serve 重启不会带走任务。
+    on_done 给了才退回线程内投递——那种场合调用方本来就要等结果，进程活着是前提。
+    """
+    if on_done is None:
+        return deliver_detached(thread_id, message)
 
     def run():
         result = deliver_and_release(thread_id, message)
-        if on_done is not None:
-            try:
-                on_done(result)
-            except Exception:
-                pass
+        try:
+            on_done(result)
+        except Exception:
+            pass
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
