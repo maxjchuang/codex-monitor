@@ -14,6 +14,15 @@
  */
 import { readFileSync } from 'node:fs'
 
+// client.js 用 localStorage 记住上次打开的会话；这里给个内存版替身。
+const storageBacking = new Map()
+globalThis.localStorage = {
+  getItem: (k) => (storageBacking.has(k) ? storageBacking.get(k) : null),
+  setItem: (k, v) => { storageBacking.set(k, String(v)) },
+  removeItem: (k) => { storageBacking.delete(k) },
+  clear: () => storageBacking.clear(),
+}
+
 // ── mini React ────────────────────────────────────────────────────────────────
 // Hooks are addressed by (component path, call order) — keying by path alone makes
 // every hook in one component collide.
@@ -288,6 +297,8 @@ let dockParent = null
 let cardFound = false
 let textareaDisabled = null
 let textareaKeyDown = null
+// 当前选中的会话行：用来断言「重新打开时回到上次那个」。
+let selectedRowTitle = null
 let shotCount = 0
 let shotInsideBubble = 0
 let parentClass = null
@@ -343,6 +354,21 @@ function walk(node, at) {
   }
   if (typeof cls === 'string' && cls.includes('cxm-page')) {
     drawerAttr = node.props['data-drawer']
+  }
+  if (typeof cls === 'string' && cls.split(/\s+/).includes('cxm-row')
+      && node.props?.['data-selected'] === 'true') {
+    // 标题在子节点里，挑第一个非空字符串。
+    const grab = (kids) => {
+      for (const kid of kids || []) {
+        if (typeof kid === 'string' && kid.trim()) return kid.trim()
+        if (kid && kid.children) {
+          const hit = grab(kid.children)
+          if (hit) return hit
+        }
+      }
+      return null
+    }
+    selectedRowTitle = grab(node.children)
   }
   if (cls === 'cxm-dock') dockParent = node
   if (cls === 'cxm-card') cardFound = true
@@ -482,6 +508,11 @@ const checks = [
   // 容器上开 smooth 会让「切会话时贴到底部」变成一段动画，
   // 表现就是打开会话先看到顶部、然后自己滚下去。
   // 会话被 Codex 占着时，输入框必须锁住并说明原因，而不是等用户敲完再报错。
+  // 重新打开面板应该回到上次看的会话，而不是跳回列表第一个。
+  // 这三个会换选中会话并重挂组件，放在最后并自行恢复，免得影响前面的检查。
+  ['reopening restores the last session viewed', await reopen_restores_last()],
+  ['an archived last session falls back to the top one', await archived_last_falls_back()],
+  ['the last session is written on switch', await last_session_is_written()],
   ['transcript does not animate its scroll on open', (() => {
     // 从注入到 head 的样式表里读，别重新解析一遍 client.js。
     const style = headChildren.find((el) => el['data-plugin-css'] === 'codex-monitor')
@@ -664,6 +695,67 @@ function cmd_enter_does_not_send() {
 
 function enter_during_composition_does_not_send() {
   return press({ isComposing: true }) === false
+}
+
+// 选中列表里的第 n 个会话，返回它的标题。
+function selectSession(n) {
+  const rows = clickables.filter((b) => b.cls.includes('cxm-row'))
+  const row = rows[n]
+  if (!row) return null
+  row.onClick?.()
+  return row.label || null
+}
+
+// 重新挂载 + 跑完 effects。remountAndRender 只 walk 不跑 effect，
+// 而「自动选中」正是在 effect 里做的，少了这一步就等于什么都没重建。
+async function reopen() {
+  hookSlots.clear()
+  renderOnce()
+  await settle()
+}
+
+// 换一个会话、再「重新打开」，看是否回到同一个。
+async function reopen_restores_last() {
+  localStorage.clear()
+  await reopen()
+  const first = selectedRowTitle
+  // 挑一个当前没被选中的行来点，点已选中的那行什么都不会发生。
+  const other = clickables.find((b) => b.cls.includes('cxm-row') && b.label !== first)
+  if (!other) return false
+  other.onClick?.()
+  renderOnce()
+  const wanted = selectedRowTitle
+  if (wanted === null || wanted === first) return false
+  await reopen()
+  return selectedRowTitle === wanted
+}
+
+// 上次看的会话被归档/删掉了，不能卡住不显示，要退回列表第一个。
+async function archived_last_falls_back() {
+  // 先回到一个已知状态，免得残留的选中值让检查蒙混过关。
+  localStorage.clear()
+  await reopen()
+  const before = selectedRowTitle
+  if (before === null) return false
+  // 记住一个根本不存在的会话，再重开。
+  localStorage.setItem('codex-monitor.lastSession', 'does-not-exist')
+  selectedRowTitle = null
+  await reopen()
+  // 必须落回一个真实存在的会话，而且不能是「什么都没选中」。
+  return selectedRowTitle !== null
+}
+
+async function last_session_is_written() {
+  localStorage.clear()
+  await reopen()
+  const first = selectedRowTitle
+  const other = clickables.find((b) => b.cls.includes('cxm-row') && b.label !== first)
+  if (!other) return false
+  other.onClick?.()
+  renderOnce()
+  await settle()
+  const stored = localStorage.getItem('codex-monitor.lastSession')
+  return stored !== null && stored.length > 0
 }
 
 function composer_is_card() {

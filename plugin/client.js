@@ -15,6 +15,28 @@ window.__ModuleLoader__.load({
     const { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, useCallback } = React
 
     const NS = 'codex-monitor'
+    // 记住上次打开的会话：关掉面板再打开应该回到原处，而不是跳回列表第一个。
+    // 存 id 而不是下标——列表顺序会随活跃度变，下标第二天就指向别的会话了。
+    const LAST_KEY = NS + '.lastSession'
+
+    function readLastSession() {
+      try {
+        const raw = localStorage.getItem(LAST_KEY)
+        return raw && raw.trim() ? raw : null
+      } catch {
+        // 隐私模式或存储被禁用时读不到，按没有处理。
+        return null
+      }
+    }
+
+    function writeLastSession(id) {
+      try {
+        if (id) localStorage.setItem(LAST_KEY, id)
+        else localStorage.removeItem(LAST_KEY)
+      } catch {
+        // 存不下就算了，只是少个记忆功能，不该影响使用。
+      }
+    }
     // 每次请求带多少条对话。首屏和「向上滚加载更多」用同一个值：
     // 太小要滚好几次，太大就失去分页的意义（200 条约 500KB）。
     const TRANSCRIPT_PAGE = 40
@@ -1866,6 +1888,7 @@ window.__ModuleLoader__.load({
     function MonitorPage() {
       const t = React.useContext(TranslationContext)
       const snapshot = useSnapshot()
+      // 上次看的是哪个会话，先记在心里，等列表回来再决定要不要用它。
       const [selectedId, setSelectedId] = useState(null)
       // Collapsed projects, keyed by project name. Absent means expanded.
       const [collapsed, setCollapsed] = useState({})
@@ -1914,12 +1937,19 @@ window.__ModuleLoader__.load({
       const sessions = data?.sessions ?? []
       const selected = sessions.find((s) => s.id === selectedId) ?? null
 
-      // Default to the session that most needs attention, so opening the panel lands
-      // on something useful instead of an empty pane.
+      // 打开面板时回到上次看的那个会话；没有记录、或者那个会话已经不在了
+      // （归档、被删），才退回到列表第一个。
       useEffect(() => {
         if (selectedId !== null || sessions.length === 0) return
-        setSelectedId(sessions[0].id)
+        const remembered = readLastSession()
+        const hit = remembered && sessions.some((s) => s.id === remembered)
+        setSelectedId(hit ? remembered : sessions[0].id)
       }, [selectedId, sessions])
+
+      // 换会话就记下来，下次打开直接回到这里。
+      useEffect(() => {
+        if (selectedId !== null) writeLastSession(selectedId)
+      }, [selectedId])
 
       const loadDetail = useCallback(async (id) => {
         if (!id) return
