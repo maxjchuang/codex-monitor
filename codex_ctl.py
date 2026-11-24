@@ -974,6 +974,33 @@ def hhmm(ts):
 
 
 # ─────────────────────────── 派活：app-server JSON-RPC ───────────────────────────
+def _notification_is_for(msg, thread_id=None, turn_id=None):
+    """这条通知是不是我们要等的那一轮。
+
+    派了子代理之后，子代理是独立 thread，会先发自己的 turn/completed。
+    只按方法名匹配的话，主轮次还在等子代理就被当成跑完了，调用方关掉进程，
+    主轮次直接变 interrupted——用户看到的就是「派完活任务自己停了」。
+
+    优先按 turnId 判断，它精确到某一轮；没有 turnId 才退回 threadId。
+    两个都判断不出来时返回 False：宁可多等到超时，也不能误判成结束。
+    """
+    params = msg.get("params") or {}
+    if not isinstance(params, dict):
+        return False
+    turn = params.get("turn")
+    turn = turn if isinstance(turn, dict) else {}
+    if turn_id is not None:
+        # 真实字段是 turn.id；turn.turnId 是历史写法，一起认，避免哪天又改回去。
+        got = turn.get("id") or turn.get("turnId") or params.get("turnId")
+        if got is not None:
+            return got == turn_id
+    if thread_id is not None:
+        got = params.get("threadId") or turn.get("threadId")
+        if got is not None:
+            return got == thread_id
+    return False
+
+
 class AppServer:
     def __init__(self):
         self.proc = subprocess.Popen(
@@ -1036,14 +1063,25 @@ class AppServer:
     def notify(self, method, params=None):
         self._write({"jsonrpc": "2.0", "method": method, "params": params or {}})
 
-    def wait_notification(self, method, timeout):
+    def wait_notification(self, method, timeout, thread_id=None, turn_id=None):
+        """等某条通知。给了 thread_id / turn_id 就只认那一轮。
+
+        必须过滤：派了子代理之后，子代理是独立 thread，会先发自己的
+        turn/completed。只认方法名的话，主轮次还在等子代理就被当成结束，
+        调用方关进程，主轮次直接变 interrupted——任务看着就是「自己停了」。
+        """
         deadline = time.time() + timeout
         with self.cond:
             while True:
                 for i, msg in enumerate(self.messages):
-                    if msg.get("method") == method:
-                        del self.messages[i]
-                        return msg.get("params")
+                    if msg.get("method") != method:
+                        continue
+                    if (thread_id is not None or turn_id is not None) and not _notification_is_for(
+                        msg, thread_id, turn_id
+                    ):
+                        continue
+                    del self.messages[i]
+                    return msg.get("params")
                 remaining = deadline - time.time()
                 if remaining <= 0:
                     return None
@@ -1164,8 +1202,11 @@ def deliver_and_release(thread_id, message, timeout=DELIVER_TURN_TIMEOUT):
     """
     srv = AppServer()
     try:
-        push_turn(srv, thread_id, message)
-        params = srv.wait_notification("turn/completed", timeout)
+        started = push_turn(srv, thread_id, message)
+        turn_id = ((started or {}).get("turn") or {}).get("id")
+        params = srv.wait_notification(
+            "turn/completed", timeout, thread_id=thread_id, turn_id=turn_id
+        )
         if not params:
             # 没等到结束通知不代表没投递，任务可能还在跑，只是超过了等待上限。
             return {"delivered": True, "status": "running", "error": None}
@@ -1214,7 +1255,10 @@ def deliver(thread_id, message, wait_sec, resume=True, srv=None, quiet=False):
             print("   （后台执行中，用 `status` 或 `watch` 跟进）")
             return
         print(f"⏳ 等待结果（最多 {wait_sec}s）…")
-        params = srv.wait_notification("turn/completed", wait_sec)
+        turn_id = ((result or {}).get("turn") or {}).get("id")
+        params = srv.wait_notification(
+            "turn/completed", wait_sec, thread_id=thread_id, turn_id=turn_id
+        )
         if not params:
             print("   还没跑完，稍后用 status 查看。")
             return

@@ -687,6 +687,101 @@ class TestDeliveryKeepsProcessAlive(TempDbs):
         self.assertEqual(seen["status"], "completed")
 
 
+class TestSubagentCompletionIsNotTheEnd(TempDbs):
+    """派了子代理之后，子代理会先发自己的 turn/completed。
+
+    只按方法名匹配就会把子代理的结束当成主轮次结束，调用方关掉 app-server，
+    主轮次随即变 interrupted。用户看到的现象是「派完活，任务自己停了」。
+    """
+
+    def _srv_with(self, *messages):
+        """造一个 AppServer，只提供 wait_notification 需要的那点状态。"""
+        srv = c.AppServer.__new__(c.AppServer)
+        srv.cond = threading.Condition()
+        srv.messages = list(messages)
+        return srv
+
+    def test_subagent_completion_is_skipped(self):
+        srv = self._srv_with(
+            {"method": "turn/completed",
+             "params": {"threadId": "child-1",
+                        "turn": {"id": "t-child", "status": "completed"}}},
+            {"method": "turn/completed",
+             "params": {"threadId": "main-1",
+                        "turn": {"id": "t-main", "status": "completed"}}},
+        )
+        got = srv.wait_notification("turn/completed", 1, thread_id="main-1", turn_id="t-main")
+        self.assertEqual(got["turn"]["id"], "t-main")
+
+    def test_the_subagent_message_is_left_in_the_buffer(self):
+        """跳过不等于丢掉：别的轮次的通知还留在缓冲里，之后可能要用。"""
+        srv = self._srv_with(
+            {"method": "turn/completed",
+             "params": {"threadId": "child-1", "turn": {"id": "t-child"}}},
+        )
+        srv.wait_notification("turn/completed", 0.05, thread_id="main-1", turn_id="t-main")
+        self.assertEqual(len(srv.messages), 1)
+
+    def test_turn_id_wins_over_thread_id(self):
+        """同一个线程里连开两轮时，只靠 threadId 会拿到上一轮的通知。"""
+        srv = self._srv_with(
+            {"method": "turn/completed",
+             "params": {"threadId": "main-1", "turn": {"id": "old-turn"}}},
+            {"method": "turn/completed",
+             "params": {"threadId": "main-1", "turn": {"id": "new-turn"}}},
+        )
+        got = srv.wait_notification("turn/completed", 1, thread_id="main-1", turn_id="new-turn")
+        self.assertEqual(got["turn"]["id"], "new-turn")
+
+    def test_unidentifiable_notification_does_not_end_the_wait(self):
+        """判断不出是谁的通知时不能当成结束，否则又会误杀主轮次。"""
+        srv = self._srv_with({"method": "turn/completed", "params": {}})
+        self.assertIsNone(
+            srv.wait_notification("turn/completed", 0.05, thread_id="main-1", turn_id="t-main")
+        )
+
+    def test_without_filters_it_still_matches_by_method(self):
+        """不传过滤器时保持老行为，别把现有调用点弄坏。"""
+        srv = self._srv_with(
+            {"method": "turn/completed", "params": {"turn": {"id": "any"}}},
+        )
+        got = srv.wait_notification("turn/completed", 1)
+        self.assertEqual(got["turn"]["id"], "any")
+
+    def test_the_real_field_name_is_turn_id_dot_id(self):
+        """实测 turn/completed 的 params 是 {"threadId":..., "turn":{"id":...}}。
+
+        字段名写错不会报错，只会永远等不到——比原来的 bug 更难查，
+        所以这条用例锁死真实形状。
+        """
+        srv = self._srv_with(
+            {"method": "turn/completed",
+             "params": {"threadId": "main-1",
+                        "turn": {"id": "01a20b71-ca7b", "status": "completed"}}},
+        )
+        got = srv.wait_notification("turn/completed", 1,
+                                    thread_id="main-1", turn_id="01a20b71-ca7b")
+        self.assertIsNotNone(got)
+        self.assertEqual(got["turn"]["status"], "completed")
+
+    def test_legacy_turn_id_field_still_works(self):
+        srv = self._srv_with(
+            {"method": "turn/completed",
+             "params": {"threadId": "main-1", "turn": {"turnId": "t-main"}}},
+        )
+        got = srv.wait_notification("turn/completed", 1, thread_id="main-1", turn_id="t-main")
+        self.assertIsNotNone(got)
+
+    def test_other_methods_are_ignored(self):
+        srv = self._srv_with(
+            {"method": "item/completed", "params": {"threadId": "main-1"}},
+            {"method": "turn/completed",
+             "params": {"threadId": "main-1", "turn": {"id": "t-main"}}},
+        )
+        got = srv.wait_notification("turn/completed", 1, thread_id="main-1", turn_id="t-main")
+        self.assertEqual(got["turn"]["id"], "t-main")
+
+
 class TestMarkdownImages(TempDbs):
     """Codex 发给用户的图写在正文里，是 Markdown 图片 + 本机绝对路径。
 
