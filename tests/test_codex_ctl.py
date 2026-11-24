@@ -567,44 +567,70 @@ class TestQueue(TempDbs):
 
     def test_permanent_error_drops_the_entry(self):
         """子 agent 会话无法直接 resume，重试多少次都没用，不该占着队头。"""
-        c.queue_add("t1", "doomed")
-        with mock.patch.object(c, "thread_locked", return_value=False), \
-             mock.patch.object(c, "AppServer"), \
-             mock.patch.object(c, "push_turn", side_effect=RuntimeError(
-                 "cannot resume an unloaded multi-agent v2 sub-agent")):
-            result = c.queue_drain()
-        self.assertEqual(len(result["failed"]), 1)
+        entry = c.queue_add("t1", "doomed")
+        with mock.patch.object(c, "deliver_and_release", side_effect=RuntimeError(
+                "cannot resume an unloaded multi-agent v2 sub-agent")):
+            c._queue_worker(entry["id"], "t1", "doomed")
         self.assertEqual(c.queue_list("t1"), [])
 
     def test_retryable_error_keeps_the_entry_until_the_cap(self):
-        c.queue_add("t1", "flaky")
-        boom = RuntimeError("something transient")
-        with mock.patch.object(c, "thread_locked", return_value=False), \
-             mock.patch.object(c, "AppServer"), \
-             mock.patch.object(c, "push_turn", side_effect=boom):
+        entry = c.queue_add("t1", "flaky")
+        with mock.patch.object(c, "deliver_and_release",
+                               side_effect=RuntimeError("something transient")):
             for _ in range(c.MAX_QUEUE_ATTEMPTS - 1):
-                c.queue_drain()
+                c._queue_worker(entry["id"], "t1", "flaky")
             self.assertEqual(len(c.queue_list("t1")), 1)
-            c.queue_drain()   # 第 MAX_QUEUE_ATTEMPTS 次，放弃
+            c._queue_worker(entry["id"], "t1", "flaky")   # 第 MAX 次，放弃
         self.assertEqual(c.queue_list("t1"), [])
 
-    def test_writer_busy_during_drain_does_not_count_as_failure(self):
-        c.queue_add("t1", "racing")
-        with mock.patch.object(c, "thread_locked", return_value=False), \
-             mock.patch.object(c, "AppServer"), \
-             mock.patch.object(c, "push_turn", side_effect=RuntimeError(c.WRITER_BUSY)):
-            result = c.queue_drain()
-        self.assertEqual(result["failed"], [])
+    def test_writer_busy_during_worker_does_not_count_as_failure(self):
+        """刚好被抢锁不是失败，重试次数不该被白白用掉。"""
+        entry = c.queue_add("t1", "racing")
+        with mock.patch.object(c, "deliver_and_release",
+                               side_effect=RuntimeError(c.WRITER_BUSY)):
+            result = c._queue_worker(entry["id"], "t1", "racing")
+        self.assertTrue(result.get("waiting"))
         self.assertEqual(c.queue_list("t1")[0]["attempts"], 0)
+        self.assertIsNone(c.queue_list("t1")[0].get("claimedAt"),
+                          "让出认领，下一轮要能重新投")
 
     def test_successful_delivery_clears_the_entry(self):
-        c.queue_add("t1", "ship it")
-        with mock.patch.object(c, "thread_locked", return_value=False), \
-             mock.patch.object(c, "AppServer"), \
-             mock.patch.object(c, "push_turn", return_value={}):
-            result = c.queue_drain()
-        self.assertEqual(len(result["delivered"]), 1)
+        entry = c.queue_add("t1", "ship it")
+        with mock.patch.object(c, "deliver_and_release",
+                               return_value={"delivered": True, "status": "completed"}):
+            c._queue_worker(entry["id"], "t1", "ship it")
         self.assertEqual(c.queue_list("t1"), [])
+
+    def test_drain_hands_off_to_a_detached_process(self):
+        """队列投递也必须在脱离 serve 的进程里跑，否则 serve 一重启任务照样断。"""
+        c.queue_add("t1", "ship it")
+        spawned = []
+        with mock.patch.object(c, "thread_locked", return_value=False), \
+             mock.patch.object(c, "spawn_queue_worker",
+                               side_effect=lambda e: spawned.append(e["id"])):
+            result = c.queue_drain()
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(len(result["delivered"]), 1)
+        self.assertEqual(len(c.queue_list("t1")), 1, "真正移除要等子进程投递成功")
+
+    def test_a_claimed_entry_is_not_dispatched_twice(self):
+        """泵每 5 秒跑一次，同一条不能被投两遍。"""
+        entry = c.queue_add("t1", "once")
+        spawned = []
+        with mock.patch.object(c, "thread_locked", return_value=False), \
+             mock.patch.object(c, "spawn_queue_worker",
+                               side_effect=lambda e: spawned.append(e["id"])):
+            c.queue_drain()
+            c.queue_drain()
+        self.assertEqual(len(spawned), 1)
+        self.assertTrue(c._queue_claim(entry["id"], stale_sec=600) is False)
+
+    def test_a_stale_claim_can_be_taken_over(self):
+        """投递进程要是死了，标记不能把这条永远锁住。"""
+        entry = c.queue_add("t1", "retry me")
+        c._queue_claim(entry["id"])
+        self.assertFalse(c._queue_claim(entry["id"]))
+        self.assertTrue(c._queue_claim(entry["id"], stale_sec=-1))
 
     def test_permanent_error_markers(self):
         self.assertTrue(c.is_permanent_error(RuntimeError("thread not found: abc")))

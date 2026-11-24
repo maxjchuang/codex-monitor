@@ -167,10 +167,15 @@ const statusPayload = {
     ],
   },
 }
+// 后台投递失败时，状态里会带 lastDelivery；默认没有这个字段。
+let deliveryOverride = null
 const calls = []
 globalThis.fetch = async (url) => {
   calls.push(String(url))
-  const body = String(url).includes('status') ? statusPayload : statePayload
+  const base = String(url).includes('status') ? statusPayload : statePayload
+  const body = String(url).includes('status') && deliveryOverride
+    ? { ...base, data: { ...base.data, lastDelivery: deliveryOverride } }
+    : base
   // 返回浅拷贝：详情对象会被 useState 存住，若和 fixture 共用引用，
   // 后面还原 fixture 会把已经交给界面的那份数据也一起改回去。
   return { ok: true, status: 200, json: async () => ({ ...body, data: { ...body.data } }) }
@@ -376,7 +381,13 @@ function renderOnce() {
 const cleanups = []
 const settle = async () => {
   for (let i = 0; i < 12 && (i === 0 || dirty); i += 1) renderOnce()
-  await new Promise((r) => setTimeout(r, 20))
+  // 详情是异步取回来的：只等一个 tick 会让「重新取一次详情」看到旧内容。
+  // 多等几轮，每轮都重新渲染，让 setState 的回调有机会跑完。
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise((r) => setTimeout(r, 20))
+    if (!dirty) break
+    renderOnce()
+  }
 }
 await settle()                                  // mount the page
 intervals.forEach((fn) => fn())                 // the poller's first tick
@@ -392,6 +403,16 @@ console.log('\n--- checks ---')
 const joined = texts.join(' | ')
 // 桌面渲染后立刻记下，免得后面的窄屏测试改掉全局状态。
 const desktopDrawerAttr = drawerAttr
+
+// 用「投递失败」的 fixture 重新取一次详情，看看界面到底说了什么。
+deliveryOverride = { at: 1795431100, message: '继续', delivered: false,
+                     status: 'failed', error: 'thread not found' }
+const refreshBtn = clickables.find((b) => b.label === '刷新' || b.label === 'Refresh')
+refreshBtn?.onClick?.()
+await settle()
+const failedShown = texts.some((x) => String(x).includes('这条没发出去'))
+const failedHasReason = texts.some((x) => String(x).includes('thread not found'))
+deliveryOverride = null
 const checks = [
   ['styles injected into document.head (badge survives unmount)',
     headChildren.some((el) => el['data-plugin-css'] === 'codex-monitor' && el.textContent.includes('.cxm-page'))],
@@ -445,6 +466,11 @@ const checks = [
   ['send button has no text label', send_has_no_text()],
   ['send button sits in its own dock row', send_is_in_dock()],
   ['composer is a card, not a bordered row', composer_is_card()],
+  // 后台投递失败时 HTTP 早已返回成功，界面上必须自己说出来，
+  // 否则用户只会看到任务「没动静」。
+  ['a failed background delivery is surfaced', failedShown],
+  ['the failure carries its reason', failedHasReason],
+  ['no delivery notice while nothing has failed', !joined.includes('这条没发出去')],
   // 容器上开 smooth 会让「切会话时贴到底部」变成一段动画，
   // 表现就是打开会话先看到顶部、然后自己滚下去。
   // 会话被 Codex 占着时，输入框必须锁住并说明原因，而不是等用户敲完再报错。

@@ -78,6 +78,8 @@ window.__ModuleLoader__.load({
       'reply.sending': '发送中…',
       'reply.cancel': '取消',
       'reply.sent': '已提交给 Codex，稍后会处理。',
+      'reply.deliveryFailed': '这条没发出去：{error}。内容还在，可以再发一次。',
+      'reply.deliveryFailedNoReason': '这条没发出去，原因未知。内容还在，可以再发一次。',
       'reply.failed': '投递失败：{error}',
       'reply.busy': '这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。',
       'reply.queued': '已排队。这个会话正被占着，等它释放后会自动投递，不用你再来点一次。',
@@ -145,6 +147,8 @@ window.__ModuleLoader__.load({
       'reply.sending': 'Sending…',
       'reply.cancel': 'Cancel',
       'reply.sent': 'Submitted to Codex; it will pick this up shortly.',
+      'reply.deliveryFailed': 'This did not go through: {error}. Your text is still here; send it again.',
+      'reply.deliveryFailedNoReason': 'This did not go through, reason unknown. Your text is still here; send it again.',
       'reply.failed': 'Could not deliver: {error}',
       'reply.busy': 'Codex is holding this session open. Switch to another session in Codex, or close it, then send again.',
       'reply.queued': 'Queued. This session is held right now; it will be delivered automatically once released, with no need to send again.',
@@ -610,6 +614,8 @@ window.__ModuleLoader__.load({
   background:var(--dsw-alias-state-success-primary)}
 .cxm-bad{color:var(--dsw-alias-state-error-primary);font-size:11px;line-height:16px;
   overflow-wrap:anywhere}
+/* 投递失败的提示要贴在输入框上方，和它说明的那次发送挨在一起。 */
+.cxm-delivery-failed{padding:6px 12px 0;flex:none}
 
 /* 窄屏适配照抄 DSH 左侧栏（dsh-client-ui-layout）的做法，不自己定断点：
    - 视口 < 1024 自动收起侧栏（SIDEBAR_AUTO_COLLAPSE = 1024）
@@ -1658,6 +1664,10 @@ window.__ModuleLoader__.load({
 
       const fresh = detail?.transcript ?? []
       const entries = older.length ? [...older, ...fresh] : fresh
+      // 后台投递是异步的，失败时 HTTP 早就返回成功了。不在这里说一声，
+      // 用户只会看到任务「没动静」，然后以为是自己没发出去。
+      const delivery = detail?.lastDelivery ?? null
+      const deliveryFailed = delivery && delivery.delivered === false ? delivery : null
       const count = entries.length
       const truncated = detail?.transcriptTruncated === true
 
@@ -1812,6 +1822,15 @@ window.__ModuleLoader__.load({
                     entries.map((entry, index) => h(Entry, { key: index, t, entry })),
                   ),
         ),
+        deliveryFailed
+          ? h(
+              'div',
+              { className: 'cxm-bad cxm-delivery-failed', role: 'status' },
+              deliveryFailed.error
+                ? t('reply.deliveryFailed', { error: deliveryFailed.error })
+                : t('reply.deliveryFailedNoReason'),
+            )
+          : null,
         h(Composer, {
           t,
           threadId: session.id,

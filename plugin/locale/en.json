@@ -68,5 +68,7 @@
   "reply.lockedUnknown": "Another process holds this session, so it cannot take a message right now. This clears once that program lets go.",
   "chat.imageAlt": "Attached image {n}",
   "reply.note": "Appends a new turn; does not interrupt work already running. ⌘↵ sends.",
-  "reply.options": "Options Codex offered (click to fill in, you still send):"
+  "reply.options": "Options Codex offered (click to fill in, you still send):",
+  "reply.deliveryFailed": "This did not go through: {error}. Your text is still here; send it again.",
+  "reply.deliveryFailedNoReason": "This did not go through, reason unknown. Your text is still here; send it again."
 }

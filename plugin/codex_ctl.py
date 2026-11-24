@@ -1230,10 +1230,14 @@ def deliver_detached(thread_id, message, timeout=DELIVER_TURN_TIMEOUT):
     start_new_session=True 让子进程脱离 serve 的会话和进程组，serve 被杀时它收不到
     信号、也不在同一个进程组里被连带清理，任务能继续跑完。
     """
+    # 子进程负责投递并记下结果：父进程投完就返回了，失败只能由它自己写下来。
     code = (
         "import json, sys;"
         "import codex_ctl as c;"
-        f"r = c.deliver_and_release({thread_id!r}, sys.stdin.read(), timeout={int(timeout)});"
+        f"tid = {thread_id!r};"
+        "msg = sys.stdin.read();"
+        f"r = c.deliver_and_release(tid, msg, timeout={int(timeout)});"
+        "c.record_delivery(tid, msg, r);"
         "print(json.dumps(r))"
     )
     proc = subprocess.Popen(
@@ -1460,6 +1464,37 @@ def queue_mark_failed(entry_id, error):
         _queue_write(items)
 
 
+def _queue_claim(entry_id, stale_sec=600):
+    """把一条队列条目标记成「正在投递」，防止泵的下一轮重复投同一条。
+
+    脱离 serve 的投递进程万一中途死掉，标记会一直挂着；超过 stale_sec 就当它
+    已经失效，允许重新投递。
+    """
+    with QUEUE_LOCK:
+        items = _queue_read()
+        now = int(time.time())
+        for item in items:
+            if item.get("id") != entry_id:
+                continue
+            claimed_at = int(item.get("claimedAt") or 0)
+            if claimed_at and now - claimed_at < stale_sec:
+                return False
+            item["claimedAt"] = now
+            _queue_write(items)
+            return True
+        return False
+
+
+def _queue_release_claim(entry_id):
+    with QUEUE_LOCK:
+        items = _queue_read()
+        for item in items:
+            if item.get("id") == entry_id:
+                item.pop("claimedAt", None)
+                break
+        _queue_write(items)
+
+
 MAX_QUEUE_ATTEMPTS = 5
 QUEUE_PUMP_SEC = 5
 
@@ -1474,6 +1509,106 @@ PERMANENT_ERRORS = (
 def is_permanent_error(exc):
     text = str(exc).lower()
     return any(marker in text for marker in PERMANENT_ERRORS)
+
+
+DELIVERY_DIR = os.path.join(QUEUE_DIR, "deliveries")
+DELIVERY_LOCK = threading.Lock()
+
+
+def _delivery_path(thread_id):
+    safe = "".join(ch for ch in str(thread_id) if ch.isalnum() or ch in "-_")
+    return os.path.join(DELIVERY_DIR, safe + ".json")
+
+
+def record_delivery(thread_id, message, result):
+    """记下后台投递的结果，供 UI 轮询时告诉用户「这条没发出去」。
+
+    投递是异步的，HTTP 早就返回 200 了；失败发生在之后，不记下来用户就只能
+    靠「任务没动静」自己猜。成功也记一条，UI 好把旧失败清掉。
+    """
+    with DELIVERY_LOCK:
+        try:
+            os.makedirs(DELIVERY_DIR, exist_ok=True)
+            payload = {
+                "at": int(time.time() * 1000),
+                "message": (message or "")[:200],
+                "delivered": bool(result.get("delivered")),
+                "status": result.get("status"),
+                "error": (str(result.get("error"))[:300] if result.get("error") else None),
+            }
+            path = _delivery_path(thread_id)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+
+def last_delivery(thread_id):
+    """最近一次后台投递的结果；没有就返回 None。"""
+    try:
+        with open(_delivery_path(thread_id), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _queue_worker(entry_id, thread_id, message, timeout=DELIVER_TURN_TIMEOUT):
+    """在一个脱离 serve 的进程里投递队列条目，并按结果回写队列。
+
+    队列投递原先跑在 serve 的线程里，serve 一重启就跟着断，任务照样被记成
+    interrupted——和直接投递是同一个病。所以这一步也得在独立进程里做，
+    而且结果的回写必须在同一进程里完成：父进程已经死了，没人替它记账。
+    """
+    try:
+        result = deliver_and_release(thread_id, message, timeout=timeout)
+        if result.get("delivered"):
+            queue_remove(entry_id)
+            return {"delivered": True, "status": result.get("status")}
+        error = result.get("error") or "投递失败"
+    except Exception as exc:
+        error = exc
+    # 刚好被别人抢先锁上不算失败：留着等下一轮，别把重试次数白白用掉。
+    if is_writer_busy(error):
+        _queue_release_claim(entry_id)
+        return {"delivered": False, "waiting": True, "error": str(error)[:200]}
+    # 失败要记账：可重试的累计次数，永久性的和超限的丢掉。
+    queue_mark_failed(entry_id, error)
+    updated = next((i for i in queue_list() if i.get("id") == entry_id), None)
+    if is_permanent_error(error) or (
+        updated and int(updated.get("attempts") or 0) >= MAX_QUEUE_ATTEMPTS
+    ):
+        queue_remove(entry_id)
+    return {"delivered": False, "error": str(error)[:200]}
+
+
+def spawn_queue_worker(entry):
+    """把一条队列条目交给脱离 serve 的独立进程去投。"""
+    code = (
+        "import json, sys;"
+        "import codex_ctl as c;"
+        "p = json.loads(sys.stdin.read());"
+        "print(json.dumps(c._queue_worker(p['id'], p['threadId'], p['message'])))"
+    )
+    payload = json.dumps({"id": entry["id"], "threadId": entry["threadId"],
+                          "message": entry["message"]}, ensure_ascii=False)
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code],
+        cwd=os.path.dirname(os.path.abspath(__file__)),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        proc.stdin.write(payload)
+        proc.stdin.close()
+    except Exception:
+        pass
+    return proc
 
 
 def queue_drain(verbose=False):
@@ -1494,30 +1629,28 @@ def queue_drain(verbose=False):
         if thread_locked(tid):
             waiting.append(entry_id)
             continue
+        # 队列投递也必须在脱离 serve 的进程里跑，否则 serve 一重启，
+        # 这一轮又会被记成 interrupted——和直接投递是同一个病。
+        # 先把条目标记成在投，免得下一轮泵重复投同一条。
+        if not _queue_claim(entry_id):
+            waiting.append(entry_id)
+            continue
         try:
-            # 队列里的消息同样要等轮次跑完再放锁，不能投完就关进程。
-            result = deliver_and_release(tid, msg)
-            if not result["delivered"]:
-                raise RuntimeError(result.get("error") or "投递失败")
-            queue_remove(entry_id)
+            spawn_queue_worker(entry)
             delivered.append(entry_id)
             if verbose:
-                print(f"✅ 队列投递成功 {tid} {msg[:40]}", flush=True)
+                print(f"✅ 队列投递已交给独立进程 {tid} {msg[:40]}", flush=True)
         except Exception as exc:
-            if is_writer_busy(exc):
-                # 刚好被别人抢先锁上了，不算失败，下一轮再试。
-                waiting.append(entry_id)
-            else:
-                queue_mark_failed(entry_id, exc)
-                updated = next((i for i in queue_list() if i.get("id") == entry_id), None)
-                # 永久性错误立刻放弃，可重试的失败到上限才放弃。
-                if is_permanent_error(exc) or (
-                    updated and int(updated.get("attempts") or 0) >= MAX_QUEUE_ATTEMPTS
-                ):
-                    queue_remove(entry_id)
-                failed.append(entry_id)
-                if verbose:
-                    print(f"❌ 队列投递失败 {tid}: {str(exc)[:80]}", flush=True)
+            _queue_release_claim(entry_id)
+            queue_mark_failed(entry_id, exc)
+            updated = next((i for i in queue_list() if i.get("id") == entry_id), None)
+            if is_permanent_error(exc) or (
+                updated and int(updated.get("attempts") or 0) >= MAX_QUEUE_ATTEMPTS
+            ):
+                queue_remove(entry_id)
+            failed.append(entry_id)
+            if verbose:
+                print(f"❌ 队列投递失败 {tid}: {str(exc)[:80]}", flush=True)
     return {"delivered": delivered, "waiting": waiting, "failed": failed}
 
 
@@ -1579,6 +1712,9 @@ def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
              "queuedAt": q.get("queuedAt"), "attempts": q.get("attempts")}
             for q in queue_list(thread_id)
         ],
+        # 后台投递的结果。投递是异步的，失败时 HTTP 早就返回成功过了，
+        # 不把结果带出来，用户只会看到任务「没动静」而不知道为什么。
+        "lastDelivery": last_delivery(thread_id),
         "transcriptBefore": chat["before"],
         "items": [
             {"type": it["type"], "at": it["at"],
