@@ -87,7 +87,7 @@ window.__ModuleLoader__.load({
       'reply.lockedIdle': 'Codex 桌面端开着这个会话，一直占着不放。现在发会排队；关掉 Codex 桌面端就立刻投递。',
       'reply.lockedUnknown': '这个会话被另一个进程占着，暂时不能投递。关掉占用它的程序后这里会自动恢复。',
       'chat.imageAlt': '用户附的图 {n}',
-      'reply.note': '追加为新的一轮，不打断正在跑的任务。⌘↵ 发送。',
+      'reply.note': '追加为新的一轮，不打断正在跑的任务。Enter 发送，Shift+Enter 换行。',
       'reply.options': 'Codex 给出的选项（点击填入，需你自己发送）：',
     }
     const en = {
@@ -156,7 +156,7 @@ window.__ModuleLoader__.load({
       'reply.lockedIdle': 'The Codex desktop app holds this session even while idle. Sending now will queue; closing the desktop app delivers it right away.',
       'reply.lockedUnknown': 'Another process holds this session, so it cannot take a message right now. This clears once that program lets go.',
       'chat.imageAlt': 'Attached image {n}',
-      'reply.note': 'Appends a new turn; does not interrupt work already running. ⌘↵ sends.',
+      'reply.note': 'Appends a new turn; does not interrupt work already running. Enter sends, Shift+Enter for a new line.',
       'reply.options': 'Options Codex offered (click to fill in, you still send):',
     }
 
@@ -1391,10 +1391,13 @@ window.__ModuleLoader__.load({
             'aria-label': t('reply.placeholder'),
             onChange: (event) => setDraft(event.target.value),
             onKeyDown: (event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                event.preventDefault()
-                submit()
-              }
+              if (event.key !== 'Enter') return
+              // 输入法选词时的 Enter 是确认候选词，不是发送。
+              if (event.nativeEvent?.isComposing || event.isComposing) return
+              // Enter 发送；Shift/⌘/Ctrl+Enter 换行，和 DSH 的 fixed.newline 一致。
+              if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return
+              event.preventDefault()
+              submit()
             },
           }),
           // 按钮单独一行靠右，和 DSH 的 dock 一致；不跟 textarea 抢同一行。

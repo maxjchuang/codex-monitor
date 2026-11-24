@@ -287,6 +287,7 @@ let drawerAttr = null
 let dockParent = null
 let cardFound = false
 let textareaDisabled = null
+let textareaKeyDown = null
 let shotCount = 0
 let shotInsideBubble = 0
 let parentClass = null
@@ -317,6 +318,7 @@ function walk(node, at) {
   }
   if (node.type === 'textarea') {
     textareaDisabled = node.props?.disabled === true
+    textareaKeyDown = node.props?.onKeyDown ?? null
   }
   if (typeof node.type === 'function') {
     const name = node.type.name || 'Anon'
@@ -466,6 +468,12 @@ const checks = [
   ['send button has no text label', send_has_no_text()],
   ['send button sits in its own dock row', send_is_in_dock()],
   ['composer is a card, not a bordered row', composer_is_card()],
+  // Enter 发送、Shift+Enter 换行，和 DSH 的 fixed.send / fixed.newline 一致。
+  // 输入法选词时的 Enter 必须放过，否则中文输入一半就把消息发出去了。
+  ['Enter sends', enter_sends()],
+  ['Shift+Enter inserts a newline instead of sending', shift_enter_does_not_send()],
+  ['Cmd+Enter inserts a newline instead of sending', cmd_enter_does_not_send()],
+  ['Enter during IME composition does not send', enter_during_composition_does_not_send()],
   // 后台投递失败时 HTTP 早已返回成功，界面上必须自己说出来，
   // 否则用户只会看到任务「没动静」。
   ['a failed background delivery is surfaced', failedShown],
@@ -625,6 +633,37 @@ function send_is_in_dock() {
   const b = allButtons.find((x) => x.cls.includes('cxm-send'))
   if (!b) return false
   return b.cls === 'cxm-send' && dockParent !== null
+}
+
+// 把一次按键喂给输入框，看它有没有被当成发送拦下来。
+function press(props) {
+  if (!textareaKeyDown) return null
+  const event = {
+    key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, altKey: false,
+    isComposing: false, nativeEvent: null,
+    preventDefault() { this.defaultPrevented = true },
+    defaultPrevented: false,
+    ...props,
+  }
+  if (event.nativeEvent === null) event.nativeEvent = { isComposing: event.isComposing }
+  textareaKeyDown(event)
+  return event.defaultPrevented
+}
+
+function enter_sends() {
+  return press({}) === true
+}
+
+function shift_enter_does_not_send() {
+  return press({ shiftKey: true }) === false
+}
+
+function cmd_enter_does_not_send() {
+  return press({ metaKey: true }) === false && press({ ctrlKey: true }) === false
+}
+
+function enter_during_composition_does_not_send() {
+  return press({ isComposing: true }) === false
 }
 
 function composer_is_card() {
