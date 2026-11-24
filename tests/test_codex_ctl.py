@@ -30,9 +30,12 @@ class TempDbs(unittest.TestCase):
         state = os.path.join(self.tmp.name, "state_5.sqlite")
 
         conn = sqlite3.connect(hist)
+        # 列要和真实库一致：recent_items 靠 rollout_ordinal 走索引，
+        # 测试库少了这列的话那条查询会静默失败，测试反而看不出问题。
         conn.execute(
             "create table thread_items (thread_id text, turn_id text, item_id text, "
-            "item_type text, created_at_ms integer, item_json text)"
+            "item_type text, created_at_ms integer, item_json text, "
+            "rollout_ordinal integer)"
         )
         conn.execute(
             "create table thread_turns (thread_id text, turn_id text, status text, "
@@ -89,11 +92,16 @@ class TempDbs(unittest.TestCase):
         conn.commit()
         conn.close()
 
-    def add_item(self, thread_id, item_type, payload, at_ms, turn_id="t1"):
+    def add_item(self, thread_id, item_type, payload, at_ms, turn_id="t1", ordinal=None):
         conn = sqlite3.connect(c.HIST_DB)
+        # ordinal 默认用时间戳占位：测试里两者通常一起递增，
+        # 需要构造「时间与 ordinal 不同步」的用例时再显式传。
+        if ordinal is None:
+            ordinal = at_ms
         conn.execute(
-            "insert into thread_items values (?,?,?,?,?,?)",
-            (thread_id, turn_id, f"i{at_ms}", item_type, at_ms, __import__("json").dumps(payload)),
+            "insert into thread_items values (?,?,?,?,?,?,?)",
+            (thread_id, turn_id, f"i{at_ms}", item_type, at_ms,
+             __import__("json").dumps(payload), ordinal),
         )
         conn.commit()
         conn.close()
@@ -1285,6 +1293,107 @@ class TestThreads(TempDbs):
         conn.commit()
         conn.close()
         self.assertEqual([t["id"] for t in c.latest_threads(5)], ["main"])
+
+    def test_recent_items_follows_time_not_ordinal(self):
+        """时间不随 ordinal 单调，排序必须按时间，不能图省事按 ordinal。
+
+        真实库里有大量时间倒退（投影和回放顺序不完全一致），
+        按 ordinal 排会挑错条目。
+        """
+        # ordinal 递增，但时间是倒着来的。
+        self.add_item("t", "agentMessage", {"text": "old"}, 1000, ordinal=1)
+        self.add_item("t", "agentMessage", {"text": "new"}, 3000, ordinal=2)
+        self.add_item("t", "agentMessage", {"text": "mid"}, 2000, ordinal=3)
+        got = [i["data"]["text"] for i in c.recent_items("t", 2)]
+        self.assertEqual(got, ["new", "mid"])
+
+    def test_recent_items_survives_a_long_thread(self):
+        """会话比窗口长时也要取到真正最新的条目。
+
+        窗口按 ordinal 取，长会话装不下；此时必须保证结果仍是时间上最新的。
+        """
+        for i in range(1, 900):
+            self.add_item("t", "agentMessage", {"text": f"m{i}"}, i * 1000, ordinal=i)
+        # 最新一条的 ordinal 很小、时间最大：只有按时间排才会选中它。
+        self.add_item("t", "agentMessage", {"text": "newest"}, 10 ** 9, ordinal=1)
+        got = [i["data"]["text"] for i in c.recent_items("t", 1)]
+        self.assertEqual(got, ["newest"])
+
+    def test_recent_items_reports_latest_activity(self):
+        """with_latest 要给出最新时间，供活跃度判断复用，省掉一次 max() 查询。"""
+        self.add_item("t", "agentMessage", {"text": "a"}, 1000)
+        self.add_item("t", "agentMessage", {"text": "b"}, 5000)
+        items, latest = c.recent_items("t", 1, with_latest=True)
+        self.assertEqual(latest, 5000)
+        self.assertEqual(items[0]["data"]["text"], "b")
+
+    def test_recent_items_does_not_scan_the_whole_thread(self):
+        """最近条目必须走 ordinal 索引，不能把整个会话排一遍。
+
+        按 created_at_ms 排序用不上任何索引，4 万条的会话单次要 200ms 以上，
+        而列表里每个会话都要查一次。这里用「ordinal 和时间的顺序相反」
+        构造：只有真按时间排、又没全表扫描的实现才两者都对。
+        """
+        # 条目要多于窗口（400），才会走到「长会话」那条路径——正是实际会
+        # 卡住的那种。ordinal 递增、时间倒着来：只有按时间排的实现才给出
+        # m1/m2/m3，按 ordinal 排会给出最后几条，正好错。
+        total = 500
+        for i in range(1, total + 1):
+            self.add_item("t", "agentMessage", {"text": f"m{i}"}, (total - i) * 1000, ordinal=i)
+        got = [i["data"]["text"] for i in c.recent_items("t", 3)]
+        self.assertEqual(got, ["m1", "m2", "m3"])
+
+    def test_rollout_image_is_read_once_per_file(self):
+        """一页里多张图只该读一次 rollout，而不是每张图重扫整个文件。
+
+        rollout 实测能到 46MB。原来每找一张图就把整个文件读一遍，一页 26 张
+        就是 1.2GB 读取，单次详情要 1 秒多。这里放 5 张不同的图（路径各不相同，
+        所以不会命中单图缓存），只有「扫一次建索引」的实现才只读一遍文件。
+        """
+        tid = "01a2bbbb-0000-7000-8000-000000000010"
+        gone = ["/tmp/definitely-not-here-01a2bbbb/shot%d.png" % n for n in range(5)]
+        with tempfile.TemporaryDirectory() as d:
+            rollout = os.path.join(d, "rollout.jsonl")
+            with open(rollout, "w", encoding="utf-8") as handle:
+                for n, path in enumerate(gone):
+                    record = {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text",
+                                 "text": '<image name=[Image #%d] path="%s">' % (n, path)},
+                                {"type": "input_image",
+                                 "image_url": "data:image/png;base64,aGVsbG8="},
+                            ],
+                        },
+                    }
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self.add_thread(tid, "图都丢了的会话", rollout_path=rollout)
+            for n, path in enumerate(gone):
+                self.add_item(tid, "userMessage", {
+                    "type": "userMessage",
+                    "id": f"m{n}",
+                    "content": [{"type": "localImage", "path": path}],
+                }, 1000 + n)
+            # 数「真正把 rollout 读进内存」的次数，而不是函数被调次数——
+            # rollout_image 每次都问索引，但索引本身应该只建一次。
+            reads = []
+            real_open = open
+            def counting_open(path, *a, **k):
+                if str(path) == rollout:
+                    reads.append(1)
+                return real_open(path, *a, **k)
+            import builtins
+            builtins.open = counting_open
+            try:
+                entries = c.transcript(tid, 20)["entries"]
+            finally:
+                builtins.open = real_open
+        self.assertTrue(any(e.get("images") for e in entries))
+        # 5 张不同的图，文件只该读一次；逐张重扫会读 5 次。
+        self.assertLessEqual(len(reads), 1)
 
     def test_missing_db_is_safe(self):
         c.HIST_DB = os.path.join(self.tmp.name, "nope.sqlite")

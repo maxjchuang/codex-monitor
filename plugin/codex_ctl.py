@@ -201,20 +201,19 @@ def latest_turn(thread_id):
         conn.close()
 
 
-def recent_items(thread_id, limit=8):
-    conn = db(HIST_DB)
-    if not conn:
-        return []
-    try:
-        rows = conn.execute(
-            "select item_type, created_at_ms, item_json from thread_items "
-            "where thread_id=? order by created_at_ms desc limit ?",
-            (thread_id, limit),
-        ).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
+# 取最近条目时先按 rollout_ordinal 取一段再在内存里按时间排。
+# 直接 order by created_at_ms 用不上任何索引：现有的索引都是
+# (thread_id, rollout_ordinal) 这种形状，SQLite 只能建临时 B 树把整个会话排一遍。
+# 实测最大的会话（4.7 万条）单次 222ms，而 build_list 要为每个会话查一次，
+# 打开面板就卡在几秒钟上。按 ordinal 取窗口是索引扫描，0ms。
+#
+# 时间并不严格随 ordinal 递增（有些会话有几百处时间倒退，投影和回放顺序不完全一致），
+# 所以不能直接改排序字段——那是换语义，不是换实现。窗口取够大再内存排序才是等价的。
+RECENT_WINDOW_MIN = 400
+
+
+def _items(rows):
+    """把 thread_items 的行转成 UI/CLI 共用的条目结构。"""
     out = []
     for r in rows:
         try:
@@ -224,6 +223,69 @@ def recent_items(thread_id, limit=8):
         # 统一成秒：调用方（CLI 与 UI）都按秒渲染，避免毫秒/秒混用。
         out.append({"type": r["item_type"], "at": r["created_at_ms"] / 1000, "data": payload})
     return out
+RECENT_WINDOW_TRIES = (1, 8, 64)
+
+
+def recent_items(thread_id, limit=8, with_latest=False):
+    """最近 limit 条条目。
+
+    走 rollout_ordinal 索引取一段窗口，再在内存里按时间排。直接
+    order by created_at_ms 用不上任何索引——现有索引都是
+    (thread_id, rollout_ordinal) 这种形状，SQLite 只能建临时 B 树把整个
+    会话排一遍。最大的会话单次 222ms，而列表里每个会话都要查一次，
+    打开面板就卡在好几秒上。
+
+    时间并不严格随 ordinal 递增，所以不能直接换排序字段，那是改语义。
+    这里靠窗口保证等价：窗口摸到会话最小的 ordinal 时整个会话都在手上，
+    内存排序必然精确。摸不到（会话比窗口长）时才用 max() 核对最新时间，
+    确实漏了再退回精确查询。min() 走索引几乎不要钱，max() 在最大的会话上
+    约 36ms，所以先 min 后 max 能省掉绝大多数核对。
+    """
+    conn = db(HIST_DB)
+    if not conn:
+        return []
+    try:
+        window = max(RECENT_WINDOW_MIN, limit * 8)
+        rows = conn.execute(
+            "select item_type, created_at_ms, item_json, rollout_ordinal "
+            "from thread_items where thread_id=? order by rollout_ordinal desc limit ?",
+            (thread_id, window),
+        ).fetchall()
+        if not rows:
+            return ([], 0) if with_latest else []
+        # 窗口取满了才有截断风险：最近的条目可能落在窗口之外。
+        # 先摸 min(rollout_ordinal)——它走索引，几乎不要钱——窗口已经
+        # 探到这个会话最小的 ordinal 就说明全在手里，可以放心内存排序。
+        if len(rows) >= window:
+            floor = conn.execute(
+                "select min(rollout_ordinal) from thread_items where thread_id=?",
+                (thread_id,),
+            ).fetchone()[0]
+            if floor is not None and rows[-1]["rollout_ordinal"] > floor:
+                # 会话比窗口长，确实可能漏。这时才值得付 max() 的代价
+                # （最大的会话约 36ms）核对一次。
+                actual = conn.execute(
+                    "select max(created_at_ms) from thread_items where thread_id=?",
+                    (thread_id,),
+                ).fetchone()[0]
+                newest = max(r["created_at_ms"] or 0 for r in rows)
+                if actual is not None and actual > newest:
+                    rows = conn.execute(
+                        "select item_type, created_at_ms, item_json from thread_items "
+                        "where thread_id=? order by created_at_ms desc limit ?",
+                        (thread_id, limit),
+                    ).fetchall()
+                    latest = max((r["created_at_ms"] or 0 for r in rows), default=0)
+                    return (_items(rows), latest) if with_latest else _items(rows)
+        latest = max((r["created_at_ms"] or 0 for r in rows), default=0)
+        rows = sorted(rows, key=lambda r: -(r["created_at_ms"] or 0))[:limit]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    # build_list 还要用「最新一条的时间」算活跃度，顺手一起给出去，
+    # 免得再为同一个会话跑一次 max(created_at_ms)（最大的会话上要 166ms）。
+    return (_items(rows), latest) if with_latest else _items(rows)
 
 
 # 用户贴图时 Codex 会在正文前面塞一段文件清单，那是给模型看的，不是人话。
@@ -368,31 +430,69 @@ def shrink_data_url(url):
     return f"{header},{base64.b64encode(shrink_image(raw)).decode()}"
 
 
-def rollout_image(rollout_path, path):
-    """从 rollout jsonl 里捞回某张图的 base64。按路径精确匹配，不靠顺序。"""
-    if not rollout_path or not os.path.exists(rollout_path):
-        return None
+# rollout 文件能有几十 MB（实测 46MB）。原来每找一张图就把整个文件读一遍，
+# 一页 26 张图就是 1.2GB 的读取，单次详情要 1 秒多。改成扫一次建索引：
+# 路径 -> base64。索引按 (文件, mtime) 失效，会话追加内容后自然重建。
+_ROLLOUT_IMAGE_INDEX = {}
+_ROLLOUT_IMAGE_INDEX_MAX = 4
+
+
+def _rollout_image_index(rollout_path):
+    try:
+        stamp = os.path.getmtime(rollout_path)
+    except OSError:
+        return {}
+    key = (rollout_path, stamp)
+    hit = _ROLLOUT_IMAGE_INDEX.get(key)
+    if hit is not None:
+        return hit
+    index = {}
     try:
         with open(rollout_path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
-                if "input_image" not in line or path not in line:
+                if "input_image" not in line:
                     continue
                 try:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                payload = record.get("payload") or {}
-                content = payload.get("content") or []
-                if not any(path in (seg.get("text") or "") for seg in content
-                           if seg.get("type") == "input_text"):
+                content = (record.get("payload") or {}).get("content") or []
+                # 同一条消息里，input_text 记着这张图原来的路径，
+                # input_image 带着它的 base64；靠这条记录把两者对上。
+                texts = [seg.get("text") or "" for seg in content
+                         if seg.get("type") == "input_text"]
+                urls = [seg.get("image_url") or "" for seg in content
+                        if seg.get("type") == "input_image"]
+                urls = [u for u in urls if u.startswith("data:image/")]
+                if not urls:
                     continue
-                for seg in content:
-                    url = seg.get("image_url") or ""
-                    if seg.get("type") == "input_image" and url.startswith("data:image/"):
-                        return shrink_data_url(url)
+                # input_text 里包着原来的路径（形如 <image name=[Image #1] path="...">），
+                # 也可能就是纯路径，两种都记上。
+                for text in texts:
+                    found = re.findall(r'path="([^"]+)"', text)
+                    found += [t.strip() for t in text.split() if t.strip().startswith("/")]
+                    for path in (found or [text]):
+                        for url in urls:
+                            index.setdefault(path, url)
     except OSError:
-        pass
-    return None
+        return {}
+    # 淘汰最久没用的那一条，而不是整个清空——清空会让同时在看的
+    # 其它会话跟着重建索引，一个 46MB 的文件重建一次就是几百毫秒。
+    if len(_ROLLOUT_IMAGE_INDEX) >= _ROLLOUT_IMAGE_INDEX_MAX:
+        try:
+            _ROLLOUT_IMAGE_INDEX.pop(next(iter(_ROLLOUT_IMAGE_INDEX)))
+        except StopIteration:
+            pass
+    _ROLLOUT_IMAGE_INDEX[key] = index
+    return index
+
+
+def rollout_image(rollout_path, path):
+    """从 rollout jsonl 里捞回某张图的 base64。按路径精确匹配，不靠顺序。"""
+    if not rollout_path or not os.path.exists(rollout_path):
+        return None
+    url = _rollout_image_index(rollout_path).get(path)
+    return shrink_data_url(url) if url else None
 
 
 def projection_stalled(thread_id, rollout_path):
@@ -492,19 +592,25 @@ def transcript(thread_id, limit=200, scan_limit=4000, before=None):
         # A busy session can be thousands of rows of mostly commands and reasoning.
         # Scanning a wider window (then trimming to `limit` below) keeps the actual
         # conversation from being crowded out by tool chatter.
+        # 走 rollout_ordinal 索引取窗口（order by created_at_ms 用不上索引，
+        # 4 万条的会话单次要 200ms 以上），再在内存里按时间排。
+        # 窗口按 scan_limit 放大一点，保证覆盖到 scan_limit 条真实条目。
+        span = max(1, scan_limit)
         if before:
             rows = conn.execute(
-                "select item_type, created_at_ms, item_json from thread_items "
-                "where thread_id=? and created_at_ms < ? "
-                "order by created_at_ms desc limit ?",
-                (thread_id, int(before), max(1, scan_limit)),
+                "select item_type, created_at_ms, item_json, rollout_ordinal "
+                "from thread_items where thread_id=? and created_at_ms < ? "
+                "order by rollout_ordinal desc limit ?",
+                (thread_id, int(before), span),
             ).fetchall()
         else:
             rows = conn.execute(
-                "select item_type, created_at_ms, item_json from thread_items "
-                "where thread_id=? order by created_at_ms desc limit ?",
-                (thread_id, max(1, scan_limit)),
+                "select item_type, created_at_ms, item_json, rollout_ordinal "
+                "from thread_items where thread_id=? "
+                "order by rollout_ordinal desc limit ?",
+                (thread_id, span),
             ).fetchall()
+        rows = sorted(rows, key=lambda r: -(r["created_at_ms"] or 0))
     except sqlite3.Error:
         return {"entries": [], "truncated": False}
     finally:
@@ -513,11 +619,15 @@ def transcript(thread_id, limit=200, scan_limit=4000, before=None):
     out = []
     truncated = len(rows) > max(1, limit)
     for r in reversed(rows):
+        kind = r["item_type"]
+        # reasoning 不进正文，它的 payload 却可能很大（模型的思考过程）。
+        # 扫 4000 行时这类条目能占三分之一，解析完直接丢掉纯属浪费。
+        if kind == "reasoning":
+            continue
         try:
             payload = json.loads(r["item_json"])
         except (json.JSONDecodeError, TypeError):
             payload = {}
-        kind = r["item_type"]
         at = r["created_at_ms"] / 1000
         if kind == "userMessage":
             content = payload.get("content") or []
@@ -547,8 +657,6 @@ def transcript(thread_id, limit=200, scan_limit=4000, before=None):
                     "id": payload.get("id"),
                     "questions": payload.get("questions") or None,
                 })
-            continue
-        if kind == "reasoning":
             continue
         label, detail = describe_item({"type": kind, "data": payload})
         out.append({"role": "action", "at": at, "label": label, "text": clip(detail, 240)})
@@ -775,15 +883,15 @@ def last_activity_at(thread_id):
         conn.close()
 
 
-def activity_age(thread_id, now_ms=None):
+def activity_age(thread_id, now_ms=None, last_at=None):
     """距最近一次动作多少秒；没有活动记录时返回 None（不要伪装成天文数字）。"""
-    last = last_activity_at(thread_id)
+    last = last_at if last_at is not None else last_activity_at(thread_id)
     if not last:
         return None
     return max(0.0, ((now_ms or int(time.time() * 1000)) - last) / 1000)
 
 
-def live_state(thread_id, turn, questions, now_ms=None):
+def live_state(thread_id, turn, questions, now_ms=None, latest_at=None):
     """综合判断会话此刻的状态。
 
     判据优先级（重要）：
@@ -797,7 +905,7 @@ def live_state(thread_id, turn, questions, now_ms=None):
        等子 agent），所以窗口太窄会误判成“已停下”。
     """
     now_ms = now_ms or int(time.time() * 1000)
-    age = activity_age(thread_id, now_ms)
+    age = activity_age(thread_id, now_ms, last_at=latest_at)
     if questions:
         return "waiting", age
 
@@ -1135,6 +1243,13 @@ def thread_locked(thread_id):
 DESKTOP_OWNER = re.compile(r"/(?:ChatGPT|Codex)\.app/Contents/.+/codex$", re.I)
 
 
+# lock_owner 要 fork 两次（lsof + ps），实测约 200ms。同一个会话在一次
+# build_status 里会被问好几遍，列表刷新也会反复问，加一层短缓存。
+# 锁的持有者以进程生命周期为粒度，几百毫秒内不会变。
+LOCK_OWNER_TTL_SEC = 2.0
+_lock_owner_cache = {}
+
+
 def lock_owner(thread_id):
     """谁占着这个会话的锁。
 
@@ -1142,6 +1257,16 @@ def lock_owner(thread_id):
     哪怕它已经闲着几小时。这种情况下关掉桌面端就能发，而正在跑的时候只能等。
     用 lsof 拿到 pid 再看进程路径，才分得清是哪一种。
     """
+    now = time.time()
+    hit = _lock_owner_cache.get(thread_id)
+    if hit and now - hit[0] < LOCK_OWNER_TTL_SEC:
+        return hit[1]
+    owner = _lock_owner_uncached(thread_id)
+    _lock_owner_cache[thread_id] = (now, owner)
+    return owner
+
+
+def _lock_owner_uncached(thread_id):
     path = os.path.join(LOCK_DIR, f"{thread_id}.lock")
     if not os.path.exists(path):
         return None
@@ -1343,8 +1468,10 @@ def build_list(srv, limit=12, order="recent"):
     now_ms = int(time.time() * 1000)
     out = []
     for t, turn, questions in rows:
-        kind, age = live_state(t["id"], turn, questions, now_ms)
-        items = recent_items(t["id"], 1)
+        # 一次查询同时拿到最近条目和最新时间：live_state 需要后者算活跃度，
+        # 分开查等于对同一个会话扫两遍。
+        items, latest = recent_items(t["id"], 1, with_latest=True)
+        kind, age = live_state(t["id"], turn, questions, now_ms, latest_at=latest)
         label, detail = describe_item(items[0]) if items else ("", "")
         out.append({
             "id": t["id"],
@@ -1678,6 +1805,8 @@ def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
     kind, age = live_state(thread_id, turn, questions)
     items = recent_items(thread_id, items_limit)
     chat = transcript(thread_id, transcript_limit)
+    # 只探测一次：flock 探测本身不贵，但没必要问两遍。
+    locked = thread_locked(thread_id)
     return {
         "id": thread_id,
         "cwd": meta.get("cwd"),
@@ -1704,8 +1833,8 @@ def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
         "transcriptHasMore": chat["hasMore"],
         # 被别的进程（通常是 Codex 桌面端）占着时不能投递，UI 据此禁用输入框。
         # lockedBy 让 UI 能说清是「正在跑，只能等」还是「只是开着，关掉就能发」。
-        "locked": thread_locked(thread_id),
-        "lockedBy": lock_kind(thread_id, kind) if thread_locked(thread_id) else None,
+        "locked": locked,
+        "lockedBy": lock_kind(thread_id, kind) if locked else None,
         # 已经排队的消息：UI 要告诉用户「关掉就会自己发出去」，而不是干等着。
         "queued": [
             {"id": q.get("id"), "message": q.get("message"),
@@ -2020,6 +2149,21 @@ def serve(port=0, host="127.0.0.1"):
             time.sleep(QUEUE_PUMP_SEC)
 
     threading.Thread(target=pump, daemon=True).start()
+
+    # 预热：用户第一次打开面板时才建 app-server、才第一次扫 rollout，
+    # 那一下要一秒多。提前在后台做掉，真正打开时就是热的。
+    def warm():
+        try:
+            # 和前端首屏取的一样：12 个会话 + 每个 40 条正文。
+            data = build_list(app_server(), 12)
+            # 顺带把上次看的那个会话的详情也备好，那是打开面板默认要显示的。
+            for row in data["sessions"][:3]:
+                build_status(app_server(), row["id"], 8, 40)
+        except Exception:
+            # 预热失败不影响使用，第一次请求会自己重来。
+            pass
+
+    threading.Thread(target=warm, daemon=True).start()
 
     print(json.dumps({"ready": True, "port": httpd.server_address[1]}), flush=True)
     try:
