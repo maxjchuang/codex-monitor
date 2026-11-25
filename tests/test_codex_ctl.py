@@ -1514,6 +1514,69 @@ class TestThreads(TempDbs):
         self.add_turn(tid, "completed", turn_id="turn-9", completed_at=1234)
         self.assertEqual(c.turn_outcome(tid, "turn-9"), ("completed", True))
 
+    def test_projection_lagging_behind_rollout_counts_as_stalled(self):
+        """投影器只是「追不上」也要算卡住，不能只在游标越过文件末尾时才认。
+
+        AgentPlan 那个会话就是这样：rollout 18.4MB，投影游标停在 3.8MB，
+        落后 79.5%，库里最新一条停在一天多以前。原来的判定只看
+        offset > size（rollout 被压缩重写的情况），这种「一直在写但追不上」
+        完全没兜住，面板上看起来就像这个会话一天没动。
+        """
+        tid = "01a2cccc-0000-7000-8000-000000000001"
+        with tempfile.TemporaryDirectory() as d:
+            rollout = os.path.join(d, "rollout.jsonl")
+            with open(rollout, "wb") as handle:
+                handle.write(b"x" * (c.STALL_MIN_BYTES * 3))
+            self.add_thread(tid, "追不上的会话", rollout_path=rollout)
+            conn = sqlite3.connect(c.HIST_DB)
+            conn.execute(
+                "insert into thread_history_projection_state "
+                "(thread_id, next_rollout_byte_offset, next_rollout_ordinal) "
+                "values (?,?,?)", (tid, 10, 1))
+            conn.commit()
+            conn.close()
+            self.assertTrue(c.projection_stalled(tid, rollout))
+
+    def test_a_small_gap_is_not_stalled(self):
+        """正在写的那一轮不该被当成卡住，否则每轮都会去扫一遍 rollout。"""
+        tid = "01a2cccc-0000-7000-8000-000000000002"
+        with tempfile.TemporaryDirectory() as d:
+            rollout = os.path.join(d, "rollout.jsonl")
+            with open(rollout, "wb") as handle:
+                handle.write(b"x" * 1000)
+            self.add_thread(tid, "刚写的会话", rollout_path=rollout)
+            conn = sqlite3.connect(c.HIST_DB)
+            conn.execute(
+                "insert into thread_history_projection_state "
+                "(thread_id, next_rollout_byte_offset, next_rollout_ordinal) "
+                "values (?,?,?)", (tid, 990, 1))
+            conn.commit()
+            conn.close()
+            self.assertFalse(c.projection_stalled(tid, rollout))
+
+    def test_heartbeat_falls_back_to_the_rollout_tail(self):
+        """历史库落后时，心跳要能从 rollout 尾部读到真实的最新时间。
+
+        库里最新一条是 1000ms，rollout 尾部却是之后的时间——只看库会把
+        「刚干完」误判成「停了很久」。
+        """
+        tid = "01a2cccc-0000-7000-8000-000000000003"
+        self.add_item(tid, "agentMessage", {"text": "old"}, 1000)
+        with tempfile.TemporaryDirectory() as d:
+            rollout = os.path.join(d, "rollout.jsonl")
+            stamp = "2026-11-26T01:32:00.000Z"
+            with open(rollout, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "timestamp": stamp,
+                    "type": "response_item",
+                    "payload": {"type": "message"},
+                }) + "\n")
+            self.add_thread(tid, "库落后的会话", rollout_path=rollout)
+            got = c.last_activity_at(tid)
+        expected = int(c.datetime.fromisoformat(
+            stamp.replace("Z", "+00:00")).timestamp() * 1000)
+        self.assertEqual(got, expected)
+
     def test_missing_db_is_safe(self):
         c.HIST_DB = os.path.join(self.tmp.name, "nope.sqlite")
         self.assertEqual(c.recent_items("x"), [])

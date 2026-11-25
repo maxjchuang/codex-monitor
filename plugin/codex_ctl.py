@@ -16,6 +16,7 @@
 
 import argparse
 import base64
+from datetime import datetime
 import fcntl
 import json
 import mimetypes
@@ -496,13 +497,23 @@ def rollout_image(rollout_path, path):
     return shrink_data_url(url) if url else None
 
 
+# 投影落后多少才算「卡住」。实测 122 个会话里 120 个落后 0 字节，
+# 剩下两个分别是 14MB 和 0.9MB——中间是空的，所以这个阈值怎么取都不会误伤。
+# 取 256KB 是为了容忍正在写入的那一轮（正常情况下投影会在轮次结束后追上）。
+STALL_MIN_BYTES = 256 * 1024
+
+
 def projection_stalled(thread_id, rollout_path):
     """Codex 的历史投影是不是卡住了。
 
-    正常情况下投影游标就等于 rollout 文件的字节数——每个会话都精确相等。但如果
-    rollout 被压缩重写过（Faster Agent 那个会话就是），游标会远大于文件大小，
-    投影器按旧偏移找不到新记录，于是永远停在那儿，历史库再也追不上 rollout。
-    这种情况下只能自己去 rollout 里把后面的对话补出来。
+    正常情况下投影游标就等于 rollout 文件的字节数——每个会话都精确相等。有两种
+    卡法，都只能自己去 rollout 里把后面的对话补出来：
+
+    1. 游标远大于文件大小。rollout 被压缩重写过（Faster Agent 那个会话就是），
+       投影器按旧偏移找不到新记录，于是永远停在那儿。
+    2. 游标小于文件大小但追不上。投影器没在跑、或者跑到一半死了，rollout 一直在
+       写、历史库一直不动。AgentPlan 那个会话就这样落后了 14MB（79.5%），
+       库里最新一条停在一天多以前，面板上看起来就像这个会话没动静。
     """
     if not rollout_path or not os.path.exists(rollout_path):
         return False
@@ -524,7 +535,10 @@ def projection_stalled(thread_id, rollout_path):
         size = os.path.getsize(rollout_path)
     except OSError:
         return False
-    return row["next_rollout_byte_offset"] > size
+    offset = row["next_rollout_byte_offset"]
+    if offset > size:
+        return True
+    return size - offset > STALL_MIN_BYTES
 
 
 def rollout_entries(rollout_path):
@@ -868,8 +882,47 @@ def collapse_run(run):
     }]
 
 
+def rollout_tail_at(rollout_path, chunk=64 * 1024):
+    """rollout 文件最后一条记录的时间（毫秒），只读文件末尾。
+
+    历史库是投影出来的，投影器可能落后甚至停摆（AgentPlan 那个会话落后了
+    14MB，库里最新一条停在一天多以前）。rollout 本身是桌面版边跑边写的，
+    要判断「现在还有没有在动」只能看它。只读末尾 64KB，1ms 就够。
+    """
+    if not rollout_path:
+        return 0
+    try:
+        size = os.path.getsize(rollout_path)
+        with open(rollout_path, "rb") as handle:
+            handle.seek(max(0, size - chunk))
+            data = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return 0
+    for line in reversed(data.splitlines()):
+        line = line.strip()
+        if not line.endswith("}"):
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        stamp = record.get("timestamp")
+        if not stamp:
+            continue
+        try:
+            return int(datetime.fromisoformat(
+                stamp.replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            continue
+    return 0
+
+
 def last_activity_at(thread_id):
-    """该会话最新一条动作的时间（毫秒）。桌面版边跑边写，是最可靠的心跳。"""
+    """该会话最新一条动作的时间（毫秒）。桌面版边跑边写，是最可靠的心跳。
+
+    历史库和 rollout 都看一眼，取更新的那个：投影器落后时库里是旧时间，
+    只看库会把「刚干完」误判成「停了一天」。
+    """
     conn = db(HIST_DB)
     if not conn:
         return 0
@@ -877,11 +930,12 @@ def last_activity_at(thread_id):
         row = conn.execute(
             "select max(created_at_ms) from thread_items where thread_id=?", (thread_id,)
         ).fetchone()
-        return (row[0] if row else 0) or 0
+        stored = (row[0] if row else 0) or 0
     except sqlite3.Error:
         return 0
     finally:
         conn.close()
+    return max(stored, rollout_tail_at(rollout_path_for(thread_id)))
 
 
 def activity_age(thread_id, now_ms=None, last_at=None):
@@ -1513,6 +1567,9 @@ def build_list(srv, limit=12, order="recent"):
         # 一次查询同时拿到最近条目和最新时间：live_state 需要后者算活跃度，
         # 分开查等于对同一个会话扫两遍。
         items, latest = recent_items(t["id"], 1, with_latest=True)
+        # 历史库可能落后（投影器停摆时能差一天多），rollout 才是桌面版真正在写的
+        # 那一份。只读文件尾部 64KB，1ms，比让状态停在一天前划算得多。
+        latest = max(latest, rollout_tail_at(t.get("rollout_path")))
         kind, age = live_state(t["id"], turn, questions, now_ms, latest_at=latest)
         label, detail = describe_item(items[0]) if items else ("", "")
         out.append({
