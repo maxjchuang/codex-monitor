@@ -337,6 +337,29 @@ class TestWriterBusy(TempDbs):
         self.assertFalse(c.is_writer_busy(RuntimeError("thread not found: x")))
         self.assertFalse(c.is_writer_busy(RuntimeError("timeout")))
 
+    def test_a_held_session_is_refused_not_queued(self):
+        """被别的客户端占着时如实拒绝。
+
+        这里以前会排进插件自己的队列，等锁释放自动投。那套轮询已经删掉了：
+        桌面端持有走 codex queue，剩下的只能等对方放锁。如果哪天有人把入队
+        逻辑加回来，这条会红——用户不该看到一条永远发不出去的排队记录。
+        """
+        payload, status = c.send_refusal(RuntimeError(
+            "thread/resume: {'code': -32600, 'message': "
+            "'thread x already has an active writer'}"))
+        self.assertEqual(status, 409)
+        self.assertIs(payload["ok"], False)
+        self.assertIs(payload["busy"], True)
+        self.assertNotIn("queued", payload)
+        self.assertNotIn("queueId", payload)
+        self.assertIn("别的进程", payload["error"])
+
+    def test_other_send_failures_are_server_errors(self):
+        payload, status = c.send_refusal(RuntimeError("thread not found: x"))
+        self.assertEqual(status, 500)
+        self.assertIs(payload["ok"], False)
+        self.assertIn("thread not found", payload["error"])
+
     def test_close_waits_for_the_process_to_exit(self):
         """close 只 terminate 不等退出，锁还没放掉，重试就会撞同一把锁。"""
         proc = mock.Mock()

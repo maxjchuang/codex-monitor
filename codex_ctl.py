@@ -1389,6 +1389,22 @@ class QueueUncertain(RuntimeError):
 WRITER_BUSY = "already has an active writer"
 
 
+def send_refusal(exc):
+    """投递失败时该回给用户什么。返回 (payload, http_status)。
+
+    被别的进程占着不是错误，是「现在不行」：以前这里会把消息排进自己的队列
+    干等锁释放，但那套轮询已经删掉了——桌面端持有走 codex queue，剩下的
+    只能等对方放锁，如实说清楚比让用户等一条永远不会发出的排队记录好。
+    """
+    if is_writer_busy(exc):
+        return ({
+            "ok": False,
+            "busy": True,
+            "error": "这个会话正被别的进程占着，现在发不进去。等它那一轮结束再发。",
+        }, 409)
+    return ({"ok": False, "error": str(exc)}, 500)
+
+
 def is_writer_busy(exc):
     return WRITER_BUSY in str(exc)
 
@@ -2187,18 +2203,8 @@ def serve(port=0, host="127.0.0.1"):
                     deliver_async(tid, msg)
                     self._json({"ok": True, "delivered": True, "async": True})
                 except Exception as exc:
-                    if is_writer_busy(exc):
-                        # 别的进程正占着这个会话，我们插不进去。以前这里会排进自己的
-                        # 队列干等锁释放，但那套轮询已经被 codex queue 取代：桌面端
-                        # 持有走上面那条路，剩下的是别的客户端在占，只能等它放。
-                        self._json({
-                            "ok": False,
-                            "busy": True,
-                            "error": "这个会话正被别的进程占着，现在发不进去。"
-                                     "等它那一轮结束再发。",
-                        }, 409)
-                    else:
-                        self._json({"ok": False, "error": str(exc)}, 500)
+                    payload, status = send_refusal(exc)
+                    self._json(payload, status)
                 return
 
             self._json({"ok": False, "error": "not found"}, 404)
