@@ -70,5 +70,7 @@
   "reply.note": "追加为新的一轮，不打断正在跑的任务。Enter 发送，Shift+Enter 换行。",
   "reply.options": "Codex 给出的选项（点击填入，需你自己发送）：",
   "reply.deliveryFailed": "这条没发出去：{error}。内容还在，可以再发一次。",
-  "reply.deliveryFailedNoReason": "这条没发出去，原因未知。内容还在，可以再发一次。"
+  "reply.deliveryFailedNoReason": "这条没发出去，原因未知。内容还在，可以再发一次。",
+  "reply.handedOver": "会话在 Codex 桌面端开着，消息已交给它，由它接收并执行。执行时机取决于桌面端，回到原会话就能看到进度。",
+  "reply.handedOverUncertain": "消息可能已经交给 Codex 桌面端了，结果未能确认。请到原会话确认，不要重复发送。"
 }

@@ -179,8 +179,15 @@ const statusPayload = {
 // 后台投递失败时，状态里会带 lastDelivery；默认没有这个字段。
 let deliveryOverride = null
 const calls = []
-globalThis.fetch = async (url) => {
+// 派活回执要能按用例切换：交给桌面端 / 结果未知 / 排进本地队列。
+let sendReply = null
+
+globalThis.fetch = async (url, options) => {
   calls.push(String(url))
+  if (sendReply && String(url).includes('codex-monitor/send')) {
+    const body = sendReply
+    return { ok: true, status: 200, json: async () => ({ ok: true, ...body }) }
+  }
   const base = String(url).includes('status') ? statusPayload : statePayload
   const body = String(url).includes('status') && deliveryOverride
     ? { ...base, data: { ...base.data, lastDelivery: deliveryOverride } }
@@ -210,6 +217,8 @@ const dict = {
   'reply.placeholder': '给这个 Codex 会话发消息…', 'reply.send': '发送',
   'reply.sending': '发送中…', 'reply.sent': '已提交', 'reply.failed': '投递失败：{error}',
   'reply.note': '追加为新的一轮', 'reply.options': 'Codex 给出的选项（点击填入）：',
+  'reply.queued': '已排队', 'reply.handedOver': '已交给桌面端',
+  'reply.handedOverUncertain': '结果待确认',
   'row.noActions': '暂无动作记录',
   'age.justNow': '刚刚', 'age.seconds': '{n}s 前', 'age.minutes': '{n} 分钟前', 'age.hours': '{n} 小时前',
 }
@@ -297,6 +306,9 @@ let dockParent = null
 let cardFound = false
 let textareaDisabled = null
 let textareaKeyDown = null
+let textareaOnChange = null
+let noteClass = null
+let noteText = null
 // 当前选中的会话行：用来断言「重新打开时回到上次那个」。
 let selectedRowTitle = null
 let shotCount = 0
@@ -330,6 +342,13 @@ function walk(node, at) {
   if (node.type === 'textarea') {
     textareaDisabled = node.props?.disabled === true
     textareaKeyDown = node.props?.onKeyDown ?? null
+    textareaOnChange = node.props?.onChange ?? null
+  }
+  // 发送回执渲染成 cxm-ok / cxm-bad，记下文本好断言说了什么。
+  if (typeof node.props?.className === 'string'
+      && (node.props.className === 'cxm-ok' || node.props.className === 'cxm-bad')) {
+    noteClass = node.props.className
+    noteText = Array.isArray(node.children) ? node.children.join('') : String(node.children ?? '')
   }
   if (typeof node.type === 'function') {
     const name = node.type.name || 'Anon'
@@ -513,6 +532,20 @@ const checks = [
   ['reopening restores the last session viewed', await reopen_restores_last()],
   ['an archived last session falls back to the top one', await archived_last_falls_back()],
   ['the last session is written on switch', await last_session_is_written()],
+  // 派活回执：交给桌面端和「结果未知」必须说成不同的话。说反了用户会
+  // 以为任务在排队等自己关窗口，或者重复发送造成重复派活。
+  ['handover note says the desktop got it', await (async () => {
+    const note = await sendAndReadNote({ native: true, queued: true, messageId: 'm1' })
+    return note !== null && note.includes('已交给它') && note.includes('桌面端')
+  })()],
+  ['uncertain note warns against resending', await (async () => {
+    const note = await sendAndReadNote({ queued: true, uncertain: true })
+    return note !== null && note.includes('未能确认') && note.includes('不要重复发送')
+  })()],
+  ['queued note stays distinct from handover', await (async () => {
+    const note = await sendAndReadNote({ queued: true })
+    return note !== null && note.includes('已排队') && !note.includes('已交给它')
+  })()],
   ['transcript does not animate its scroll on open', (() => {
     // 从注入到 head 的样式表里读，别重新解析一遍 client.js。
     const style = headChildren.find((el) => el['data-plugin-css'] === 'codex-monitor')
@@ -695,6 +728,26 @@ function cmd_enter_does_not_send() {
 
 function enter_during_composition_does_not_send() {
   return press({ isComposing: true }) === false
+}
+
+// 走一次真实的发送流程：填词 → 按 Enter → 等回执渲染。
+async function sendAndReadNote(reply) {
+  sendReply = reply
+  try {
+    if (!textareaOnChange) return null
+    noteClass = null
+    noteText = null
+    textareaOnChange({ target: { value: '干活' } })
+    await settle()
+    press({})
+    // 回执是异步来的，多等几轮让它落到 note 上。
+    await settle()
+    await settle()
+    await settle()
+    return noteText
+  } finally {
+    sendReply = null
+  }
 }
 
 // 选中列表里的第 n 个会话，返回它的标题。

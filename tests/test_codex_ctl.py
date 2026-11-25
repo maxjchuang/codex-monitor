@@ -64,11 +64,14 @@ class TempDbs(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        self._old = (c.HIST_DB, c.STATE_DB)
+        self._old = (c.HIST_DB, c.STATE_DB, c.DISPATCH_DIR)
         c.HIST_DB, c.STATE_DB = hist, state
+        # 派活记录也必须落在临时目录里。不然测试会读写真实的
+        # ~/.codex-monitor/dispatches，既污染用户数据，测试之间也互相干扰。
+        c.DISPATCH_DIR = os.path.join(self.tmp.name, "dispatches")
 
     def tearDown(self):
-        c.HIST_DB, c.STATE_DB = self._old
+        c.HIST_DB, c.STATE_DB, c.DISPATCH_DIR = self._old
         self.tmp.cleanup()
 
     def add_thread(self, thread_id, name, updated_at=1000, recency_ms=None,
@@ -106,11 +109,12 @@ class TempDbs(unittest.TestCase):
         conn.commit()
         conn.close()
 
-    def add_turn(self, thread_id, status, started_at=0, duration_ms=None, turn_id="t1"):
+    def add_turn(self, thread_id, status, started_at=0, duration_ms=None, turn_id="t1",
+                 completed_at=None):
         conn = sqlite3.connect(c.HIST_DB)
         conn.execute(
             "insert into thread_turns values (?,?,?,?,?,?)",
-            (thread_id, turn_id, status, started_at, None, duration_ms),
+            (thread_id, turn_id, status, started_at, completed_at, duration_ms),
         )
         conn.commit()
         conn.close()
@@ -1394,6 +1398,121 @@ class TestThreads(TempDbs):
         self.assertTrue(any(e.get("images") for e in entries))
         # 5 张不同的图，文件只该读一次；逐张重扫会读 5 次。
         self.assertLessEqual(len(reads), 1)
+
+    def test_codex_queue_returns_the_message_id(self):
+        """入队成功要拿到消息 ID，才能和队列里的记录对上。"""
+        proc = mock.Mock(stdout="Queued message 01a2cccc-0000-7000-8000-000000000001 "
+                                "for thread 01a2cccc-1111-7000-8000-000000000002.\n",
+                         stderr="", returncode=0)
+        with mock.patch.object(c.subprocess, "run", return_value=proc):
+            got = c.codex_queue("01a2cccc-1111-7000-8000-000000000002", "hi")
+        self.assertEqual(got, "01a2cccc-0000-7000-8000-000000000001")
+
+    def test_codex_queue_ignores_a_zero_exit_without_receipt(self):
+        """失败时退出码同样是 0，只能靠回执判断——不能看见 0 就当成功。"""
+        proc = mock.Mock(stdout="", stderr="Error: failed to queue session message: "
+                                          "no rollout found for thread id x\n", returncode=0)
+        with mock.patch.object(c.subprocess, "run", return_value=proc):
+            with self.assertRaises(RuntimeError):
+                c.codex_queue("01a2cccc-1111-7000-8000-000000000002", "hi")
+
+    def test_codex_queue_rejects_a_receipt_for_another_thread(self):
+        """回执里的会话不是目标会话时不能认，否则活会派到别的会话上。"""
+        proc = mock.Mock(stdout="Queued message 01a2cccc-0000-7000-8000-000000000001 "
+                                "for thread 01a2cccc-9999-7000-8000-000000000009.\n",
+                         stderr="", returncode=0)
+        with mock.patch.object(c.subprocess, "run", return_value=proc):
+            with self.assertRaises(c.QueueUncertain):
+                c.codex_queue("01a2cccc-1111-7000-8000-000000000002", "hi")
+
+    def test_codex_queue_timeout_is_uncertain_not_failed(self):
+        """超时可能已经入队了。当成失败会导致自动重发，派活就重复了。"""
+        with mock.patch.object(c.subprocess, "run",
+                               side_effect=c.subprocess.TimeoutExpired("codex", 10)):
+            with self.assertRaises(c.QueueUncertain):
+                c.codex_queue("01a2cccc-1111-7000-8000-000000000002", "hi")
+
+    def test_dispatch_tag_is_found_in_history(self):
+        """派活标记要能从原会话历史里找回来，否则「已收件」永远变不成「在跑」。"""
+        tid = "01a2cccc-2222-7000-8000-000000000003"
+        self.add_thread(tid, "派活追踪")
+        token = "abc123def456"
+        self.add_item(tid, "userMessage", {
+            "type": "userMessage", "id": "m1",
+            "content": [{"type": "text",
+                         "text": "干活\n\n" + c.DISPATCH_TAG.format(token=token)}],
+        }, 1000, turn_id="turn-42")
+        self.assertEqual(c.find_dispatch_turn(tid, token), "turn-42")
+
+    def test_dispatch_tag_is_not_confused_with_another_token(self):
+        """标记要精确匹配。前缀相同就当命中会把两条派活混成一条。"""
+        tid = "01a2cccc-3333-7000-8000-000000000004"
+        self.add_thread(tid, "派活追踪")
+        self.add_item(tid, "userMessage", {
+            "type": "userMessage", "id": "m1",
+            "content": [{"type": "text",
+                         "text": "干活\n\n" + c.DISPATCH_TAG.format(token="aaaa1111")}],
+        }, 1000, turn_id="turn-1")
+        self.assertIsNone(c.find_dispatch_turn(tid, "aaaa"))
+
+    def test_reconcile_upgrades_queued_to_running(self):
+        """入队只是收件。历史里出现了这条才算真的在跑，状态要跟着变。"""
+        tid = "01a2cccc-4444-7000-8000-000000000005"
+        self.add_thread(tid, "派活追踪")
+        token = "beefcafe0001"
+        c._append_dispatch(tid, token, "干活")
+        c.update_dispatch(tid, token, status="queued", messageId="mid-1")
+        self.assertEqual(c.dispatch_reconcile(tid), [])
+        self.assertEqual(c.list_dispatches(tid)[-1]["status"], "queued")
+        self.add_item(tid, "userMessage", {
+            "type": "userMessage", "id": "m1",
+            "content": [{"type": "text",
+                         "text": "干活\n\n" + c.DISPATCH_TAG.format(token=token)}],
+        }, 2000, turn_id="turn-9")
+        self.assertEqual(c.dispatch_reconcile(tid), [token])
+        row = c.list_dispatches(tid)[-1]
+        self.assertEqual(row["status"], "running")
+        self.assertEqual(row["turnId"], "turn-9")
+
+    def test_dispatch_result_follows_the_turn_to_completion(self):
+        """派出去之后要能报出这活到底成没成，不能停在「已收件」。"""
+        tid = "01a2cccc-5555-7000-8000-000000000006"
+        self.add_thread(tid, "派活结果")
+        token = "feed00001111"
+        c._append_dispatch(tid, token, "干活")
+        c.update_dispatch(tid, token, status="queued")
+        self.add_item(tid, "userMessage", {
+            "type": "userMessage", "id": "m1",
+            "content": [{"type": "text",
+                         "text": "干活\n\n" + c.DISPATCH_TAG.format(token=token)}],
+        }, 1000, turn_id="turn-7")
+        # 轮次还没跑完：不能报结果。
+        self.add_turn(tid, "inProgress", turn_id="turn-7", completed_at=None)
+        c.dispatch_reconcile(tid)
+        self.assertEqual(c.list_dispatches(tid)[-1]["status"], "running")
+        # 跑完了：状态要跟上真实结果。
+        conn = sqlite3.connect(c.HIST_DB)
+        conn.execute("update thread_turns set status='completed', completed_at=2000 "
+                     "where thread_id=? and turn_id='turn-7'", (tid,))
+        conn.commit()
+        conn.close()
+        c.dispatch_reconcile(tid)
+        row = c.list_dispatches(tid)[-1]
+        self.assertEqual(row["status"], "completed")
+        self.assertEqual(row["turnId"], "turn-7")
+
+    def test_unfinished_turn_is_not_reported_as_failed(self):
+        """别人的在飞轮次从外面看拿不到完成时间。这时报失败会误伤正在跑的任务。"""
+        tid = "01a2cccc-6666-7000-8000-000000000007"
+        self.add_thread(tid, "派活结果")
+        self.add_turn(tid, "interrupted", turn_id="turn-8", completed_at=None)
+        self.assertEqual(c.turn_outcome(tid, "turn-8"), ("interrupted", False))
+
+    def test_turn_outcome_reports_completion_once_it_has_a_time(self):
+        tid = "01a2cccc-7777-7000-8000-000000000008"
+        self.add_thread(tid, "派活结果")
+        self.add_turn(tid, "completed", turn_id="turn-9", completed_at=1234)
+        self.assertEqual(c.turn_outcome(tid, "turn-9"), ("completed", True))
 
     def test_missing_db_is_safe(self):
         c.HIST_DB = os.path.join(self.tmp.name, "nope.sqlite")

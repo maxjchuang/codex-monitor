@@ -70,5 +70,7 @@
   "reply.note": "Appends a new turn; does not interrupt work already running. Enter sends, Shift+Enter for a new line.",
   "reply.options": "Options Codex offered (click to fill in, you still send):",
   "reply.deliveryFailed": "This did not go through: {error}. Your text is still here; send it again.",
-  "reply.deliveryFailedNoReason": "This did not go through, reason unknown. Your text is still here; send it again."
+  "reply.deliveryFailedNoReason": "This did not go through, reason unknown. Your text is still here; send it again.",
+  "reply.handedOver": "Codex desktop has this session open, so the message was handed to it. It will pick it up and run it in the original session, at its own pace.",
+  "reply.handedOverUncertain": "The message may already have reached Codex desktop, but this could not be confirmed. Check the original session before sending again."
 }

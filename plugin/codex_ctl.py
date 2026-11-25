@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 CODEX = os.environ.get("CODEX_BIN", "codex")
@@ -1290,6 +1291,47 @@ def _lock_owner_uncached(thread_id):
     return {"pid": int(pid), "command": command, "desktop": bool(DESKTOP_OWNER.search(command))}
 
 
+# Codex 桌面端只要打开过某个会话就一直占着它的写锁，哪怕它闲着几小时。
+# 这种情况下 resume 会撞 "already has an active writer"，但会话本身是好的，
+# 桌面端也随时能收活。`codex queue` 就是为这个场景准备的：消息直接交给
+# 持有该会话的客户端，由它接收并执行，不需要我们去抢锁。
+QUEUE_RECEIPT = re.compile(r"^Queued message ([0-9a-f-]+) for thread ([0-9a-f-]+)\.[ \t\r]*$",
+                           re.IGNORECASE | re.MULTILINE)
+CODEX_QUEUE_TIMEOUT_SEC = 10.0
+
+
+def codex_queue(thread_id, message, timeout=CODEX_QUEUE_TIMEOUT_SEC):
+    """把消息交给持有该会话的桌面端。返回入队回执的消息 ID。
+
+    只认 CLI 打印的回执，不看退出码——实测失败时退出码同样是 0，
+    只有输出里那句 Error 能说明问题。
+    回执里的 thread 必须和目标一致，否则不认（防止排到别的会话上）。
+    """
+    try:
+        proc = subprocess.run(
+            [CODEX, "queue", "--thread", thread_id, "--message", message],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("找不到本机 codex 命令，无法交给桌面端")
+    except subprocess.SubprocessError:
+        # 超时/被杀：命令可能已经生效，不能当成失败，更不能自动重发。
+        raise QueueUncertain("排队结果待确认")
+    out = f"{proc.stdout}\n{proc.stderr}"
+    match = QUEUE_RECEIPT.search(out)
+    if not match:
+        detail = " ".join(out.split())[:160] or "没有输出"
+        raise RuntimeError(f"没有拿到可核对的排队回执：{detail}")
+    message_id, receipt_thread = match.group(1), match.group(2)
+    if receipt_thread.lower() != thread_id.lower():
+        raise QueueUncertain(f"回执里的会话是 {receipt_thread}，与目标不符")
+    return message_id
+
+
+class QueueUncertain(RuntimeError):
+    """排队结果未知：命令可能已经生效。绝不能自动重发，否则会重复派活。"""
+
+
 WRITER_BUSY = "already has an active writer"
 
 
@@ -1523,6 +1565,168 @@ def build_list(srv, limit=12, order="recent"):
 # ─────────────────────────── 排队：锁释放后自动投递 ───────────────────────────
 QUEUE_DIR = os.path.join(os.path.expanduser("~"), ".codex-monitor")
 QUEUE_FILE = os.path.join(QUEUE_DIR, "queue.json")
+
+# 交给桌面端的消息末尾会带一个唯一标记。桌面端什么时候执行不由我们决定，
+# 所以只能事后回到原会话历史里找这个标记，才能把「已收件」变成「真的在跑」。
+DISPATCH_DIR = os.path.join(QUEUE_DIR, "dispatches")
+DISPATCH_LOCK = threading.Lock()
+DISPATCH_TAG = "[cxm:{token}]"
+
+
+def _dispatch_path(thread_id):
+    safe = "".join(ch for ch in str(thread_id) if ch.isalnum() or ch in "-_")
+    return os.path.join(DISPATCH_DIR, safe + ".json")
+
+
+def _append_dispatch(thread_id, token, message):
+    """落一条派活记录。入队前调用——命令可能生效而我们没看到回执。"""
+    entry = {
+        "token": token,
+        "threadId": thread_id,
+        "messageId": None,
+        "at": int(time.time() * 1000),
+        "message": (message or "")[:200],
+        "status": "pending",
+        "turnId": None,
+        "result": None,
+    }
+    with DISPATCH_LOCK:
+        try:
+            os.makedirs(DISPATCH_DIR, exist_ok=True)
+            path = _dispatch_path(thread_id)
+            data = []
+            if os.path.exists(path):
+                try:
+                    with open(path, encoding="utf-8") as handle:
+                        data = json.load(handle)
+                except (OSError, json.JSONDecodeError):
+                    data = []
+            if not isinstance(data, list):
+                data = []
+            data.append(entry)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data[-20:], handle, ensure_ascii=False)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    return token
+
+
+def list_dispatches(thread_id):
+    try:
+        with open(_dispatch_path(thread_id), encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def update_dispatch(thread_id, token, **changes):
+    with DISPATCH_LOCK:
+        data = list_dispatches(thread_id)
+        hit = False
+        for item in data:
+            if item.get("token") == token:
+                item.update(changes)
+                hit = True
+        if not hit:
+            return False
+        try:
+            path = _dispatch_path(thread_id)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False)
+            os.replace(tmp, path)
+        except OSError:
+            return False
+    return True
+
+
+def dispatch_threads():
+    """所有还有未确认派活的会话。"""
+    try:
+        names = os.listdir(DISPATCH_DIR)
+    except OSError:
+        return []
+    return [n[:-5] for n in names if n.endswith(".json")]
+
+
+def dispatch_reconcile(thread_id):
+    """把「已收件」核对成「真的在跑」。
+
+    入队回执只证明桌面端收下了消息，执行是它自己的节奏——可能立刻跑，
+    也可能等用户切到那个会话才跑。所以只能回原会话历史里找标记。
+    """
+    changed = []
+    for item in list_dispatches(thread_id):
+        if item.get("status") not in ("queued", "uncertain", "pending"):
+            continue
+        turn_id = find_dispatch_turn(thread_id, item.get("token"))
+        if not turn_id:
+            continue
+        update_dispatch(thread_id, item["token"], status="running", turnId=turn_id)
+        changed.append(item["token"])
+    # 已经找到轮次的，继续看它跑完没有——用户要的是「这活到底成没成」。
+    for item in list_dispatches(thread_id):
+        if item.get("status") != "running" or not item.get("turnId"):
+            continue
+        state, completed = turn_outcome(thread_id, item["turnId"])
+        if not completed:
+            # 别的进程里的轮次，从外面看可能一直是「进行中」而拿不到完成时间。
+            # 这时候不能当成结束——误报失败比晚一点报更糟。
+            continue
+        update_dispatch(thread_id, item["token"], status=state,
+                        result=state)
+        changed.append(item["token"])
+    return changed
+
+
+def turn_outcome(thread_id, turn_id):
+    """这一轮跑完没有，结果是什么。返回 (状态, 是否已结束)。"""
+    conn = db(HIST_DB)
+    if not conn:
+        return ("unknown", False)
+    try:
+        row = conn.execute(
+            "select status, completed_at from thread_turns where thread_id=? and turn_id=?",
+            (thread_id, turn_id),
+        ).fetchone()
+    except sqlite3.Error:
+        return ("unknown", False)
+    finally:
+        conn.close()
+    if not row:
+        return ("unknown", False)
+    # 没有完成时间就不算结束。跨进程看别人的在飞轮次常常长这样。
+    if row["completed_at"] in (None, 0, ""):
+        return (row["status"] or "running", False)
+    return (row["status"] or "unknown", True)
+
+
+def find_dispatch_turn(thread_id, token):
+    """回到原会话历史里找带这个标记的用户消息，拿到它所在的 turn。
+
+    入队成功只说明桌面端收件了，执行是它自己的节奏。只有历史里真的出现了
+    这条消息，才算派活落到实处。
+    """
+    tag = DISPATCH_TAG.format(token=token)
+    conn = db(HIST_DB)
+    if not conn:
+        return None
+    try:
+        row = conn.execute(
+            "select turn_id from thread_items "
+            "where thread_id=? and item_type='userMessage' and item_json like ? "
+            "order by rollout_ordinal desc limit 1",
+            (thread_id, f"%{tag}%"),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    return row["turn_id"] if row else None
+
 QUEUE_LOCK = threading.Lock()
 
 
@@ -2110,6 +2314,42 @@ def serve(port=0, host="127.0.0.1"):
                 # 先在请求线程里探一次锁，好在被占着时能当场回 202 而不是假装投递成功。
                 try:
                     if thread_locked(tid):
+                        # 被占着，先看是谁占的。桌面端持有的话不用等——它随时
+                        # 能收活，交给它自己的队列就行，执行仍发生在原会话。
+                        owner = lock_owner(tid)
+                        if owner and owner.get("desktop"):
+                            # 先落盘再入队：万一命令生效了却没看到回执，
+                            # 这条记录是唯一能证明「可能已经派出去」的东西。
+                            token = uuid.uuid4().hex[:12]
+                            tagged = f"{msg}\n\n{DISPATCH_TAG.format(token=token)}"
+                            _append_dispatch(tid, token, msg)
+                            try:
+                                message_id = codex_queue(tid, tagged)
+                            except QueueUncertain as exc:
+                                # 可能已经排进去了。不重发，如实说结果未知。
+                                update_dispatch(tid, token, status="uncertain",
+                                                result=str(exc)[:200])
+                                self._json({
+                                    "ok": True, "queued": True, "uncertain": True,
+                                    "dispatchToken": token,
+                                    "error": f"{exc}。这条可能已经交给桌面端了，"
+                                             f"请到原会话确认，不要重复发送。",
+                                }, 202)
+                                return
+                            except Exception as exc:
+                                update_dispatch(tid, token, status="failed",
+                                                result=str(exc)[:200])
+                                self._json({"ok": False, "error": str(exc)}, 500)
+                                return
+                            update_dispatch(tid, token, status="queued",
+                                            messageId=message_id)
+                            self._json({
+                                "ok": True, "queued": True, "native": True,
+                                "messageId": message_id, "dispatchToken": token,
+                                "error": "会话开着（由 Codex 桌面端持有），消息已交给它，"
+                                         "由它接收并执行。",
+                            }, 202)
+                            return
                         raise RuntimeError(WRITER_BUSY)
                     deliver_async(tid, msg)
                     self._json({"ok": True, "delivered": True, "async": True})
@@ -2146,6 +2386,13 @@ def serve(port=0, host="127.0.0.1"):
                     queue_drain(verbose=True)
             except Exception as exc:
                 print(f"队列泵出错: {exc}", flush=True)
+            # 交给桌面端的活什么时候执行不由我们决定，只能回来核对历史里
+            # 有没有出现那条带标记的消息，才能把「已收件」变成「真的在跑」。
+            try:
+                for tid in dispatch_threads():
+                    dispatch_reconcile(tid)
+            except Exception as exc:
+                print(f"派活核对出错: {exc}", flush=True)
             time.sleep(QUEUE_PUMP_SEC)
 
     threading.Thread(target=pump, daemon=True).start()

@@ -105,6 +105,11 @@ window.__ModuleLoader__.load({
       'reply.failed': '投递失败：{error}',
       'reply.busy': '这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。',
       'reply.queued': '已排队。这个会话正被占着，等它释放后会自动投递，不用你再来点一次。',
+      // 交给桌面端自己的队列：执行发生在原会话，节奏由桌面端决定。
+      'reply.handedOver': '会话在 Codex 桌面端开着，消息已交给它，由它接收并执行。'
+        + '执行时机取决于桌面端，回到原会话就能看到进度。',
+      'reply.handedOverUncertain': '消息可能已经交给 Codex 桌面端了，结果未能确认。'
+        + '请到原会话确认，不要重复发送。',
       'reply.lockedBusy': 'Codex 正在跑这个会话，这会儿插不进去。你可以先写下来，点发送会排队，这一轮结束自动投递。',
       'reply.lockedIdle': 'Codex 桌面端开着这个会话，一直占着不放。现在发会排队；关掉 Codex 桌面端就立刻投递。',
       'reply.lockedUnknown': '这个会话被另一个进程占着，暂时不能投递。关掉占用它的程序后这里会自动恢复。',
@@ -174,6 +179,10 @@ window.__ModuleLoader__.load({
       'reply.failed': 'Could not deliver: {error}',
       'reply.busy': 'Codex is holding this session open. Switch to another session in Codex, or close it, then send again.',
       'reply.queued': 'Queued. This session is held right now; it will be delivered automatically once released, with no need to send again.',
+      'reply.handedOver': 'Codex desktop has this session open, so the message was handed to it.'
+        + ' It will pick it up and run it in the original session, at its own pace.',
+      'reply.handedOverUncertain': 'The message may already have reached Codex desktop, but this could not be confirmed.'
+        + ' Check the original session before sending again.',
       'reply.lockedBusy': 'Codex is running this session right now, so nothing can be inserted. You can still write and send: it will be queued and delivered when this turn ends.',
       'reply.lockedIdle': 'The Codex desktop app holds this session even while idle. Sending now will queue; closing the desktop app delivers it right away.',
       'reply.lockedUnknown': 'Another process holds this session, so it cannot take a message right now. This clears once that program lets go.',
@@ -1346,7 +1355,13 @@ window.__ModuleLoader__.load({
           // 锁着时后端会入队而不是拒收，要如实告诉用户「还没发出去」。
           setNote({
             ok: true,
-            text: result?.queued ? t('reply.queued') : t('reply.sent'),
+            text: result?.native
+              ? t('reply.handedOver')
+              : result?.uncertain
+                ? t('reply.handedOverUncertain')
+                : result?.queued
+                  ? t('reply.queued')
+                  : t('reply.sent'),
           })
           setDraft('')
           setPicked(null)
