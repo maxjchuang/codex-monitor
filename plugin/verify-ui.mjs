@@ -217,7 +217,7 @@ const dict = {
   'reply.placeholder': '给这个 Codex 会话发消息…', 'reply.send': '发送',
   'reply.sending': '发送中…', 'reply.sent': '已提交', 'reply.failed': '投递失败：{error}',
   'reply.note': '追加为新的一轮', 'reply.options': 'Codex 给出的选项（点击填入）：',
-  'reply.queued': '已排队', 'reply.handedOver': '已交给桌面端',
+  'reply.handedOver': '已交给桌面端',
   'reply.handedOverUncertain': '结果待确认',
   'row.noActions': '暂无动作记录',
   'age.justNow': '刚刚', 'age.seconds': '{n}s 前', 'age.minutes': '{n} 分钟前', 'age.hours': '{n} 小时前',
@@ -541,10 +541,6 @@ const checks = [
   ['uncertain note warns against resending', await (async () => {
     const note = await sendAndReadNote({ queued: true, uncertain: true })
     return note !== null && note.includes('未能确认') && note.includes('不要重复发送')
-  })()],
-  ['queued note stays distinct from handover', await (async () => {
-    const note = await sendAndReadNote({ queued: true })
-    return note !== null && note.includes('已排队') && !note.includes('已交给它')
   })()],
   ['transcript does not animate its scroll on open', (() => {
     // 从注入到 head 的样式表里读，别重新解析一遍 client.js。

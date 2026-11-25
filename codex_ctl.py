@@ -1619,15 +1619,15 @@ def build_list(srv, limit=12, order="recent"):
     }
 
 
-# ─────────────────────────── 排队：锁释放后自动投递 ───────────────────────────
-QUEUE_DIR = os.path.join(os.path.expanduser("~"), ".codex-monitor")
-QUEUE_FILE = os.path.join(QUEUE_DIR, "queue.json")
+# ─────────────────────── 派活追踪：交给桌面端之后核对结果 ───────────────────────
+STATE_DIR = os.path.join(os.path.expanduser("~"), ".codex-monitor")
 
 # 交给桌面端的消息末尾会带一个唯一标记。桌面端什么时候执行不由我们决定，
 # 所以只能事后回到原会话历史里找这个标记，才能把「已收件」变成「真的在跑」。
-DISPATCH_DIR = os.path.join(QUEUE_DIR, "dispatches")
+DISPATCH_DIR = os.path.join(STATE_DIR, "dispatches")
 DISPATCH_LOCK = threading.Lock()
 DISPATCH_TAG = "[cxm:{token}]"
+DISPATCH_POLL_SEC = 5
 
 
 def _dispatch_path(thread_id):
@@ -1784,122 +1784,7 @@ def find_dispatch_turn(thread_id, token):
         conn.close()
     return row["turn_id"] if row else None
 
-QUEUE_LOCK = threading.Lock()
-
-
-def _queue_read():
-    """读出待投递的消息。文件损坏时当作空队列，不因为一条坏数据就罢工。"""
-    try:
-        with open(QUEUE_FILE, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, json.JSONDecodeError):
-        return []
-    return data if isinstance(data, list) else []
-
-
-def _queue_write(items):
-    """原子写：先写临时文件再 rename，避免中途崩溃留下半个 JSON。"""
-    try:
-        os.makedirs(QUEUE_DIR, exist_ok=True)
-        tmp = QUEUE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(items, handle, ensure_ascii=False)
-        os.replace(tmp, QUEUE_FILE)
-    except OSError:
-        pass
-
-
-def queue_add(thread_id, message):
-    """把一条消息排进队列。同一条消息重复提交要能认出来，不重复排队。"""
-    with QUEUE_LOCK:
-        items = _queue_read()
-        entry = {
-            "id": f"{int(time.time() * 1000)}-{len(items)}",
-            "threadId": thread_id,
-            "message": message,
-            "queuedAt": int(time.time() * 1000),
-            "attempts": 0,
-            "error": None,
-        }
-        items.append(entry)
-        _queue_write(items)
-        return entry
-
-
-def queue_list(thread_id=None):
-    with QUEUE_LOCK:
-        items = _queue_read()
-    if thread_id:
-        items = [i for i in items if i.get("threadId") == thread_id]
-    return items
-
-
-def queue_remove(entry_id):
-    with QUEUE_LOCK:
-        items = [i for i in _queue_read() if i.get("id") != entry_id]
-        _queue_write(items)
-
-
-def queue_mark_failed(entry_id, error):
-    """投递失败时记下来。连续失败太多次就放弃，别无限重试。"""
-    with QUEUE_LOCK:
-        items = _queue_read()
-        for item in items:
-            if item.get("id") == entry_id:
-                item["attempts"] = int(item.get("attempts") or 0) + 1
-                item["error"] = str(error)[:300]
-                break
-        _queue_write(items)
-
-
-def _queue_claim(entry_id, stale_sec=600):
-    """把一条队列条目标记成「正在投递」，防止泵的下一轮重复投同一条。
-
-    脱离 serve 的投递进程万一中途死掉，标记会一直挂着；超过 stale_sec 就当它
-    已经失效，允许重新投递。
-    """
-    with QUEUE_LOCK:
-        items = _queue_read()
-        now = int(time.time())
-        for item in items:
-            if item.get("id") != entry_id:
-                continue
-            claimed_at = int(item.get("claimedAt") or 0)
-            if claimed_at and now - claimed_at < stale_sec:
-                return False
-            item["claimedAt"] = now
-            _queue_write(items)
-            return True
-        return False
-
-
-def _queue_release_claim(entry_id):
-    with QUEUE_LOCK:
-        items = _queue_read()
-        for item in items:
-            if item.get("id") == entry_id:
-                item.pop("claimedAt", None)
-                break
-        _queue_write(items)
-
-
-MAX_QUEUE_ATTEMPTS = 5
-QUEUE_PUMP_SEC = 5
-
-# 这些错误重试多少次都不会好，排队等着只是白占位置。
-PERMANENT_ERRORS = (
-    "cannot resume an unloaded multi-agent",
-    "thread not found",
-    "no rollout found",
-)
-
-
-def is_permanent_error(exc):
-    text = str(exc).lower()
-    return any(marker in text for marker in PERMANENT_ERRORS)
-
-
-DELIVERY_DIR = os.path.join(QUEUE_DIR, "deliveries")
+DELIVERY_DIR = os.path.join(STATE_DIR, "deliveries")
 DELIVERY_LOCK = threading.Lock()
 
 
@@ -1941,105 +1826,6 @@ def last_delivery(thread_id):
     except (OSError, json.JSONDecodeError):
         return None
     return data if isinstance(data, dict) else None
-
-
-def _queue_worker(entry_id, thread_id, message, timeout=DELIVER_TURN_TIMEOUT):
-    """在一个脱离 serve 的进程里投递队列条目，并按结果回写队列。
-
-    队列投递原先跑在 serve 的线程里，serve 一重启就跟着断，任务照样被记成
-    interrupted——和直接投递是同一个病。所以这一步也得在独立进程里做，
-    而且结果的回写必须在同一进程里完成：父进程已经死了，没人替它记账。
-    """
-    try:
-        result = deliver_and_release(thread_id, message, timeout=timeout)
-        if result.get("delivered"):
-            queue_remove(entry_id)
-            return {"delivered": True, "status": result.get("status")}
-        error = result.get("error") or "投递失败"
-    except Exception as exc:
-        error = exc
-    # 刚好被别人抢先锁上不算失败：留着等下一轮，别把重试次数白白用掉。
-    if is_writer_busy(error):
-        _queue_release_claim(entry_id)
-        return {"delivered": False, "waiting": True, "error": str(error)[:200]}
-    # 失败要记账：可重试的累计次数，永久性的和超限的丢掉。
-    queue_mark_failed(entry_id, error)
-    updated = next((i for i in queue_list() if i.get("id") == entry_id), None)
-    if is_permanent_error(error) or (
-        updated and int(updated.get("attempts") or 0) >= MAX_QUEUE_ATTEMPTS
-    ):
-        queue_remove(entry_id)
-    return {"delivered": False, "error": str(error)[:200]}
-
-
-def spawn_queue_worker(entry):
-    """把一条队列条目交给脱离 serve 的独立进程去投。"""
-    code = (
-        "import json, sys;"
-        "import codex_ctl as c;"
-        "p = json.loads(sys.stdin.read());"
-        "print(json.dumps(c._queue_worker(p['id'], p['threadId'], p['message'])))"
-    )
-    payload = json.dumps({"id": entry["id"], "threadId": entry["threadId"],
-                          "message": entry["message"]}, ensure_ascii=False)
-    proc = subprocess.Popen(
-        [sys.executable, "-c", code],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        text=True,
-        start_new_session=True,
-    )
-    try:
-        proc.stdin.write(payload)
-        proc.stdin.close()
-    except Exception:
-        pass
-    return proc
-
-
-def queue_drain(verbose=False):
-    """把队列里能投的都投掉。
-
-    只在锁真的空出来时才试；被占着就留着等下一轮，这不算失败。
-    真正的失败（比如会话被删了）记一次，超过上限就丢掉，免得永远卡在队头。
-    """
-    delivered, waiting, failed = [], [], []
-    for entry in queue_list():
-        tid, msg, entry_id = entry.get("threadId"), entry.get("message"), entry.get("id")
-        if not tid or not msg:
-            # 坏条目直接丢掉，但要说一声，不然队列无声少一条没法排查。
-            if verbose:
-                print(f"⚠️ 丢弃不完整的队列条目 {entry_id}", flush=True)
-            queue_remove(entry_id)
-            continue
-        if thread_locked(tid):
-            waiting.append(entry_id)
-            continue
-        # 队列投递也必须在脱离 serve 的进程里跑，否则 serve 一重启，
-        # 这一轮又会被记成 interrupted——和直接投递是同一个病。
-        # 先把条目标记成在投，免得下一轮泵重复投同一条。
-        if not _queue_claim(entry_id):
-            waiting.append(entry_id)
-            continue
-        try:
-            spawn_queue_worker(entry)
-            delivered.append(entry_id)
-            if verbose:
-                print(f"✅ 队列投递已交给独立进程 {tid} {msg[:40]}", flush=True)
-        except Exception as exc:
-            _queue_release_claim(entry_id)
-            queue_mark_failed(entry_id, exc)
-            updated = next((i for i in queue_list() if i.get("id") == entry_id), None)
-            if is_permanent_error(exc) or (
-                updated and int(updated.get("attempts") or 0) >= MAX_QUEUE_ATTEMPTS
-            ):
-                queue_remove(entry_id)
-            failed.append(entry_id)
-            if verbose:
-                print(f"❌ 队列投递失败 {tid}: {str(exc)[:80]}", flush=True)
-    return {"delivered": delivered, "waiting": waiting, "failed": failed}
 
 
 def lock_kind(thread_id, state):
@@ -2092,16 +1878,10 @@ def build_status(srv, thread_id, items_limit=8, transcript_limit=200):
         "transcript": chat["entries"],
         "transcriptTruncated": chat["truncated"],
         "transcriptHasMore": chat["hasMore"],
-        # 被别的进程（通常是 Codex 桌面端）占着时不能投递，UI 据此禁用输入框。
-        # lockedBy 让 UI 能说清是「正在跑，只能等」还是「只是开着，关掉就能发」。
+        # 被别的进程占着时不能直接投递。桌面端持有会走 codex queue，所以这里
+        # 主要用来解释「现在为什么发不了」以及「那一轮是不是还在跑」。
         "locked": locked,
         "lockedBy": lock_kind(thread_id, kind) if locked else None,
-        # 已经排队的消息：UI 要告诉用户「关掉就会自己发出去」，而不是干等着。
-        "queued": [
-            {"id": q.get("id"), "message": q.get("message"),
-             "queuedAt": q.get("queuedAt"), "attempts": q.get("attempts")}
-            for q in queue_list(thread_id)
-        ],
         # 后台投递的结果。投递是异步的，失败时 HTTP 早就返回成功过了，
         # 不把结果带出来，用户只会看到任务「没动静」而不知道为什么。
         "lastDelivery": last_delivery(thread_id),
@@ -2284,10 +2064,6 @@ def serve(port=0, host="127.0.0.1"):
             if path == "/codex-monitor/ping":
                 self._json({"ok": True, "pid": os.getpid()})
                 return
-            if path == "/codex-monitor/queue":
-                qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                self._json({"ok": True, "data": queue_list((qs.get("thread") or [None])[0])})
-                return
             if path == "/codex-monitor/state":
                 qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 limit = int((qs.get("limit") or ["12"])[0])
@@ -2412,16 +2188,15 @@ def serve(port=0, host="127.0.0.1"):
                     self._json({"ok": True, "delivered": True, "async": True})
                 except Exception as exc:
                     if is_writer_busy(exc):
-                        # 锁着时不丢消息：排进队列，等锁释放自动投。
-                        # 用户关掉 Codex 桌面端后什么都不用做，这条会自己发出去。
-                        entry = queue_add(tid, msg)
+                        # 别的进程正占着这个会话，我们插不进去。以前这里会排进自己的
+                        # 队列干等锁释放，但那套轮询已经被 codex queue 取代：桌面端
+                        # 持有走上面那条路，剩下的是别的客户端在占，只能等它放。
                         self._json({
-                            "ok": True,
-                            "queued": True,
-                            "queueId": entry["id"],
-                            "error": "这个会话正被占着，消息已排队，锁一释放就会自动投递。",
+                            "ok": False,
                             "busy": True,
-                        }, 202)
+                            "error": "这个会话正被别的进程占着，现在发不进去。"
+                                     "等它那一轮结束再发。",
+                        }, 409)
                     else:
                         self._json({"ok": False, "error": str(exc)}, 500)
                 return
@@ -2434,15 +2209,10 @@ def serve(port=0, host="127.0.0.1"):
 
     httpd = Server((host, port), Handler)
 
-    # 后台投递线程：队列里的消息在锁释放后要自己发出去，不能等用户再点一次。
-    # 间隔不能太短——每轮都要探一次锁、必要时还要起 app-server，成本不低。
+    # 交给桌面端的活什么时候执行不由我们决定，只能回来核对历史里有没有出现
+    # 那条带标记的消息，才能把「已收件」变成「真的在跑」并跟进最终结果。
     def pump():
         while True:
-            try:
-                if queue_list():
-                    queue_drain(verbose=True)
-            except Exception as exc:
-                print(f"队列泵出错: {exc}", flush=True)
             # 交给桌面端的活什么时候执行不由我们决定，只能回来核对历史里
             # 有没有出现那条带标记的消息，才能把「已收件」变成「真的在跑」。
             try:
@@ -2450,7 +2220,7 @@ def serve(port=0, host="127.0.0.1"):
                     dispatch_reconcile(tid)
             except Exception as exc:
                 print(f"派活核对出错: {exc}", flush=True)
-            time.sleep(QUEUE_PUMP_SEC)
+            time.sleep(DISPATCH_POLL_SEC)
 
     threading.Thread(target=pump, daemon=True).start()
 
