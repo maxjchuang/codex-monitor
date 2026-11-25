@@ -358,7 +358,7 @@ body{margin:0;background:var(--dsw-alias-bg-base)}
           <button class="cxm-send" disabled aria-label="发送消息" title="发送消息"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z" fill="currentColor"/></svg></button>
         </div>
       </div>
-      <div class="cxm-note">追加为新的一轮，不打断正在跑的任务。Enter 发送，Shift+Enter 换行。</div>
+      <div class="cxm-statusbar" role="status" data-tone="${variant === 'queued' ? 'ok' : 'plain'}"><span class="cxm-statusbar-dot" aria-hidden="true"></span><span class="cxm-statusbar-text">${variant === 'queued' ? '这条消息排队中，将在下一轮发出。' : 'Enter 发送，Shift+Enter 换行。追加为新的一轮，不打断正在跑的任务。'}</span></div>
     </div>
   </div>
 </div>`

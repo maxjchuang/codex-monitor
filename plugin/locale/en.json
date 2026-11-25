@@ -59,17 +59,17 @@
   "reply.send": "Send",
   "reply.sending": "Sending…",
   "reply.cancel": "Cancel",
-  "reply.sent": "Submitted to Codex; it will pick this up shortly.",
+  "reply.sent": "Queued; this message goes out on the next turn.",
   "reply.failed": "Could not deliver: {error}",
-  "reply.busy": "Codex is holding this session open. Switch to another session in Codex, or close it, then send again.",
+  "reply.busy": "Another process holds this session, so it cannot take the message now. Send again once that turn ends.",
   "reply.lockedBusy": "Codex is running this session right now, so nothing can be inserted. Send again once this turn ends.",
   "reply.lockedIdle": "The Codex desktop app has this session open. Messages are handed to it and run in the original session.",
   "reply.lockedUnknown": "Another process holds this session, so it cannot take a message right now. This clears once that program lets go.",
   "chat.imageAlt": "Attached image {n}",
-  "reply.note": "Appends a new turn; does not interrupt work already running. Enter sends, Shift+Enter for a new line.",
+  "reply.note": "Enter sends, Shift+Enter for a new line. Appends a new turn without interrupting running work.",
   "reply.options": "Options Codex offered (click to fill in, you still send):",
   "reply.deliveryFailed": "This did not go through: {error}. Your text is still here; send it again.",
   "reply.deliveryFailedNoReason": "This did not go through, reason unknown. Your text is still here; send it again.",
-  "reply.handedOver": "Codex desktop has this session open, so the message was handed to it. It will pick it up and run it in the original session, at its own pace.",
-  "reply.handedOverUncertain": "The message may already have reached Codex desktop, but this could not be confirmed. Check the original session before sending again."
+  "reply.handedOver": "Queued for Codex desktop; it goes out on the next turn. It will pick it up and run it in the original session, at its own pace.",
+  "reply.handedOverUncertain": "This message may already be queued, but that could not be confirmed. Check the original session before sending again."
 }

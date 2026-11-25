@@ -215,10 +215,11 @@ const dict = {
   'chat.loadMore': '加载更早的消息', 'chat.loadingMore': '正在加载更早的消息…', 'chat.actionRun': '共 {n} 步',
   'chat.you': '你', 'chat.agent': 'Codex', 'chat.askingYou': 'Codex 在等你回答',
   'reply.placeholder': '给这个 Codex 会话发消息…', 'reply.send': '发送',
-  'reply.sending': '发送中…', 'reply.sent': '已提交', 'reply.failed': '投递失败：{error}',
+  'reply.sending': '发送中…', 'reply.sent': '这条消息已排队，将在下一轮发出。',
+  'reply.failed': '投递失败：{error}',
   'reply.note': '追加为新的一轮', 'reply.options': 'Codex 给出的选项（点击填入）：',
-  'reply.handedOver': '已交给桌面端',
-  'reply.handedOverUncertain': '结果待确认',
+  'reply.handedOver': '这条消息已交给 Codex 桌面端排队，将在下一轮发出。',
+  'reply.handedOverUncertain': '这条消息可能已经排队，但未能确认。',
   'row.noActions': '暂无动作记录',
   'age.justNow': '刚刚', 'age.seconds': '{n}s 前', 'age.minutes': '{n} 分钟前', 'age.hours': '{n} 小时前',
 }
@@ -309,6 +310,7 @@ let textareaKeyDown = null
 let textareaOnChange = null
 let noteClass = null
 let noteText = null
+let noteTone = null
 // 当前选中的会话行：用来断言「重新打开时回到上次那个」。
 let selectedRowTitle = null
 let shotCount = 0
@@ -344,11 +346,17 @@ function walk(node, at) {
     textareaKeyDown = node.props?.onKeyDown ?? null
     textareaOnChange = node.props?.onChange ?? null
   }
-  // 发送回执渲染成 cxm-ok / cxm-bad，记下文本好断言说了什么。
+  // 发送回执现在渲染在底部状态栏里，记下它的文本和语气好断言说了什么。
   if (typeof node.props?.className === 'string'
-      && (node.props.className === 'cxm-ok' || node.props.className === 'cxm-bad')) {
+      && node.props.className === 'cxm-statusbar') {
     noteClass = node.props.className
-    noteText = Array.isArray(node.children) ? node.children.join('') : String(node.children ?? '')
+    const kids = Array.isArray(node.children) ? node.children : [node.children]
+    const text = kids
+      .filter((kid) => kid && kid.props && kid.props.className === 'cxm-statusbar-text')
+      .map((kid) => (Array.isArray(kid.children) ? kid.children.join('') : String(kid.children ?? '')))
+      .join('')
+    noteText = text
+    noteTone = node.props['data-tone'] ?? null
   }
   if (typeof node.type === 'function') {
     const name = node.type.name || 'Anon'
@@ -534,9 +542,18 @@ const checks = [
   ['the last session is written on switch', await last_session_is_written()],
   // 派活回执：交给桌面端和「结果未知」必须说成不同的话。说反了用户会
   // 以为任务在排队等自己关窗口，或者重复发送造成重复派活。
-  ['handover note says the desktop got it', await (async () => {
+  ['send result lives in the bottom status bar, not the composer', await (async () => {
     const note = await sendAndReadNote({ native: true, queued: true, messageId: 'm1' })
-    return note !== null && note.includes('已交给它') && note.includes('桌面端')
+    // 回执必须落在 cxm-statusbar 上；输入框里不该再有 cxm-ok / cxm-bad。
+    return noteClass === 'cxm-statusbar' && note !== null && note.length > 0
+  })()],
+  ['status bar is quiet before anything is sent', (() => {
+    // 没发过消息时它显示操作提示，不是空白也不是报错。
+    return noteTone === null || noteTone === 'plain' || noteTone === 'ok'
+  })()],
+  ['handover note says it is queued for the next turn', await (async () => {
+    const note = await sendAndReadNote({ native: true, queued: true, messageId: 'm1' })
+    return note !== null && note.includes('排队') && note.includes('下一轮')
   })()],
   ['uncertain note warns against resending', await (async () => {
     const note = await sendAndReadNote({ queued: true, uncertain: true })
@@ -733,6 +750,7 @@ async function sendAndReadNote(reply) {
     if (!textareaOnChange) return null
     noteClass = null
     noteText = null
+    noteTone = null
     textareaOnChange({ target: { value: '干活' } })
     await settle()
     press({})

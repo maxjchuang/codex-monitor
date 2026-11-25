@@ -99,21 +99,21 @@ window.__ModuleLoader__.load({
       'reply.send': '发送',
       'reply.sending': '发送中…',
       'reply.cancel': '取消',
-      'reply.sent': '已提交给 Codex，稍后会处理。',
+      'reply.sent': '这条消息排队中，将在下一轮发出。',
       'reply.deliveryFailed': '这条没发出去：{error}。内容还在，可以再发一次。',
       'reply.deliveryFailedNoReason': '这条没发出去，原因未知。内容还在，可以再发一次。',
       'reply.failed': '投递失败：{error}',
-      'reply.busy': '这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。',
+      'reply.busy': '这个会话正被别的进程占着，这会儿发不进去。等它那一轮结束再发。',
       // 交给桌面端自己的队列：执行发生在原会话，节奏由桌面端决定。
-      'reply.handedOver': '会话在 Codex 桌面端开着，消息已交给它，由它接收并执行。'
-        + '执行时机取决于桌面端，回到原会话就能看到进度。',
-      'reply.handedOverUncertain': '消息可能已经交给 Codex 桌面端了，结果未能确认。'
+      'reply.handedOver': '这条消息已交给 Codex 桌面端，排队中，将在下一轮发出。'
+        + '回到原会话就能看到进度。',
+      'reply.handedOverUncertain': '这条消息可能已经在排队，但未能确认。'
         + '请到原会话确认，不要重复发送。',
       'reply.lockedBusy': 'Codex 正在跑这个会话，这会儿插不进去，等这一轮结束再发。',
       'reply.lockedIdle': 'Codex 桌面端开着这个会话，消息会直接交给它，由它在原会话里执行。',
       'reply.lockedUnknown': '这个会话被另一个进程占着，暂时不能投递。关掉占用它的程序后这里会自动恢复。',
       'chat.imageAlt': '用户附的图 {n}',
-      'reply.note': '追加为新的一轮，不打断正在跑的任务。Enter 发送，Shift+Enter 换行。',
+      'reply.note': 'Enter 发送，Shift+Enter 换行。追加为新的一轮，不打断正在跑的任务。',
       'reply.options': 'Codex 给出的选项（点击填入，需你自己发送）：',
     }
     const en = {
@@ -172,20 +172,20 @@ window.__ModuleLoader__.load({
       'reply.send': 'Send',
       'reply.sending': 'Sending…',
       'reply.cancel': 'Cancel',
-      'reply.sent': 'Submitted to Codex; it will pick this up shortly.',
+      'reply.sent': 'Queued; this message goes out on the next turn.',
       'reply.deliveryFailed': 'This did not go through: {error}. Your text is still here; send it again.',
       'reply.deliveryFailedNoReason': 'This did not go through, reason unknown. Your text is still here; send it again.',
       'reply.failed': 'Could not deliver: {error}',
-      'reply.busy': 'Codex is holding this session open. Switch to another session in Codex, or close it, then send again.',
-      'reply.handedOver': 'Codex desktop has this session open, so the message was handed to it.'
+      'reply.busy': 'Another process holds this session, so it cannot take the message now. Send again once that turn ends.',
+      'reply.handedOver': 'Queued for Codex desktop; it goes out on the next turn.'
         + ' It will pick it up and run it in the original session, at its own pace.',
-      'reply.handedOverUncertain': 'The message may already have reached Codex desktop, but this could not be confirmed.'
+      'reply.handedOverUncertain': 'This message may already be queued, but that could not be confirmed.'
         + ' Check the original session before sending again.',
       'reply.lockedBusy': 'Codex is running this session right now, so nothing can be inserted. Send again once this turn ends.',
       'reply.lockedIdle': 'The Codex desktop app has this session open. Messages are handed to it and run in the original session.',
       'reply.lockedUnknown': 'Another process holds this session, so it cannot take a message right now. This clears once that program lets go.',
       'chat.imageAlt': 'Attached image {n}',
-      'reply.note': 'Appends a new turn; does not interrupt work already running. Enter sends, Shift+Enter for a new line.',
+      'reply.note': 'Enter sends, Shift+Enter for a new line. Appends a new turn without interrupting running work.',
       'reply.options': 'Options Codex offered (click to fill in, you still send):',
     }
 
@@ -637,6 +637,17 @@ window.__ModuleLoader__.load({
   outline-offset:2px}
 .cxm-more{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
 .cxm-note{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px}
+/* 底部状态栏：发送结果和「这一轮在干什么」都只在这一行里说，不再挤进输入框。
+   横贯整宽、贴在最底下，视觉上比正文低一档：小字、次级色、一条分隔线。 */
+.cxm-statusbar{flex:none;display:flex;align-items:center;gap:6px;box-sizing:border-box;
+  padding:0 24px 10px;color:var(--dsw-alias-label-tertiary);
+  font-size:11px;line-height:16px;min-height:16px}
+.cxm-statusbar-dot{width:5px;height:5px;border-radius:50%;flex:none;
+  background:var(--dsw-alias-label-quaternary,var(--dsw-alias-label-tertiary))}
+.cxm-statusbar-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cxm-statusbar[data-tone='ok'] .cxm-statusbar-dot{background:var(--dsw-alias-state-success-primary)}
+.cxm-statusbar[data-tone='bad']{color:var(--dsw-alias-state-error-primary)}
+.cxm-statusbar[data-tone='bad'] .cxm-statusbar-dot{background:var(--dsw-alias-state-error-primary)}
 .cxm-ok{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;
   display:flex;gap:6px;align-items:center}
 .cxm-ok::before{content:'';width:5px;height:5px;border-radius:50%;flex:none;
@@ -1323,7 +1334,7 @@ window.__ModuleLoader__.load({
     }
 
     /** The composer: appends a turn; never answers on the user's behalf. */
-    function Composer({ t, threadId, questions, onSent, locked = false, lockedBy = null }) {
+    function Composer({ t, threadId, questions, onSent, onNote, locked = false, lockedBy = null }) {
       // 锁住的原因不一样，用户该做的事也不一样：正在跑只能等，只是开着可以去关掉。
       const lockedText =
         lockedBy === 'busy' ? t('reply.lockedBusy')
@@ -1331,7 +1342,6 @@ window.__ModuleLoader__.load({
             : t('reply.lockedUnknown')
       const [draft, setDraft] = useState('')
       const [busy, setBusy] = useState(false)
-      const [note, setNote] = useState(null)
       const [picked, setPicked] = useState(null)
 
       const options = (questions ?? []).flatMap((q) => q.options ?? [])
@@ -1339,7 +1349,7 @@ window.__ModuleLoader__.load({
       // Switching sessions must not carry a half-typed message into the new one.
       useEffect(() => {
         setDraft('')
-        setNote(null)
+        onNote?.(null)
         setPicked(null)
       }, [threadId])
 
@@ -1347,10 +1357,10 @@ window.__ModuleLoader__.load({
         const message = draft.trim()
         if (!message || busy) return
         setBusy(true)
-        setNote(null)
+        onNote?.(null)
         try {
           const result = await call('POST', 'codex-monitor/send', { threadId, message })
-          setNote({
+          onNote?.({
             ok: true,
             text: result?.native
               ? t('reply.handedOver')
@@ -1363,7 +1373,7 @@ window.__ModuleLoader__.load({
           onSent?.()
         } catch (error) {
           // Keep the draft: losing the typed message is worse than the failed send.
-          setNote({
+          onNote?.({
             ok: false,
             text: error.threadBusy
               ? t('reply.busy')
@@ -1478,9 +1488,6 @@ window.__ModuleLoader__.load({
           ),
           ),   // .cxm-dock
         ),     // .cxm-card
-        note
-          ? h('div', { className: note.ok ? 'cxm-ok' : 'cxm-bad' }, note.text)
-          : h('div', { className: 'cxm-note' }, t('reply.note')),
       )
     }
 
@@ -1695,6 +1702,9 @@ window.__ModuleLoader__.load({
       const [before, setBefore] = useState(null)
       const [hasMore, setHasMore] = useState(false)
       const [loadingMore, setLoadingMore] = useState(false)
+      // 发送回执放在最底部的状态栏，不塞进输入框：输入框只放输入，
+      // 结果和「正在跑」的提示统一在底部一行里说。
+      const [note, setNote] = useState(null)
       const olderKey = useRef(null)
 
       const fresh = detail?.transcript ?? []
@@ -1712,6 +1722,7 @@ window.__ModuleLoader__.load({
         setOlder([])
         setBefore(null)
         setHasMore(false)
+        setNote(null)
         olderKey.current = null
         stick.current = true
       }, [session.id])
@@ -1871,9 +1882,24 @@ window.__ModuleLoader__.load({
           threadId: session.id,
           questions,
           onSent,
+          onNote: setNote,
           locked: detail?.locked === true,
           lockedBy: detail?.lockedBy ?? null,
         }),
+        h(
+          'div',
+          {
+            className: 'cxm-statusbar',
+            role: 'status',
+            'aria-live': 'polite',
+            'data-tone': note ? (note.ok ? 'ok' : 'bad') : 'plain',
+          },
+          h('span', {
+            className: 'cxm-statusbar-dot',
+            'aria-hidden': 'true',
+          }),
+          h('span', { className: 'cxm-statusbar-text' }, note ? note.text : t('reply.note')),
+        ),
       )
     }
 

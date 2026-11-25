@@ -59,17 +59,17 @@
   "reply.send": "发送",
   "reply.sending": "发送中…",
   "reply.cancel": "取消",
-  "reply.sent": "已提交给 Codex，稍后会处理。",
+  "reply.sent": "这条消息排队中，将在下一轮发出。",
   "reply.failed": "投递失败：{error}",
-  "reply.busy": "这个会话正被 Codex 占着（在桌面端里开着）。在 Codex 里切到别的会话，或关掉它，再发送。",
+  "reply.busy": "这个会话正被别的进程占着，这会儿发不进去。等它那一轮结束再发。",
   "reply.lockedBusy": "Codex 正在跑这个会话，这会儿插不进去，等这一轮结束再发。",
   "reply.lockedIdle": "Codex 桌面端开着这个会话，消息会直接交给它，由它在原会话里执行。",
   "reply.lockedUnknown": "这个会话被另一个进程占着，暂时不能投递。关掉占用它的程序后这里会自动恢复。",
   "chat.imageAlt": "用户附的图 {n}",
-  "reply.note": "追加为新的一轮，不打断正在跑的任务。Enter 发送，Shift+Enter 换行。",
+  "reply.note": "Enter 发送，Shift+Enter 换行。追加为新的一轮，不打断正在跑的任务。",
   "reply.options": "Codex 给出的选项（点击填入，需你自己发送）：",
   "reply.deliveryFailed": "这条没发出去：{error}。内容还在，可以再发一次。",
   "reply.deliveryFailedNoReason": "这条没发出去，原因未知。内容还在，可以再发一次。",
-  "reply.handedOver": "会话在 Codex 桌面端开着，消息已交给它，由它接收并执行。执行时机取决于桌面端，回到原会话就能看到进度。",
-  "reply.handedOverUncertain": "消息可能已经交给 Codex 桌面端了，结果未能确认。请到原会话确认，不要重复发送。"
+  "reply.handedOver": "这条消息已交给 Codex 桌面端，排队中，将在下一轮发出。回到原会话就能看到进度。",
+  "reply.handedOverUncertain": "这条消息可能已经在排队，但未能确认。请到原会话确认，不要重复发送。"
 }
