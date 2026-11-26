@@ -309,6 +309,8 @@ let textareaDisabled = null
 let textareaKeyDown = null
 let textareaOnChange = null
 let noteClass = null
+// 输入框卡片里只该有「文本区 + 按钮行」。任何多出来的提示元素都是噪音。
+let cardChildClasses = []
 let noteText = null
 let noteTone = null
 // 当前选中的会话行：用来断言「重新打开时回到上次那个」。
@@ -398,7 +400,13 @@ function walk(node, at) {
     selectedRowTitle = grab(node.children)
   }
   if (cls === 'cxm-dock') dockParent = node
-  if (cls === 'cxm-card') cardFound = true
+  if (cls === 'cxm-card') {
+    cardFound = true
+    // 记下卡片里的直接子元素：只允许 textarea 和 dock，多一个就是塞了提示。
+    cardChildClasses = (Array.isArray(node.children) ? node.children : [node.children])
+      .filter((kid) => kid && kid.props)
+      .map((kid) => kid.props.className ?? String(kid.type))
+  }
   if (typeof node.type === 'string' && node.type === 'button' && typeof node.props?.onClick === 'function') {
     const rec = { cls: cls || '', label: node.props['aria-label'] || node.props.title || '', onClick: node.props.onClick, node }
     clickables.push(rec)
@@ -420,6 +428,7 @@ function renderOnce() {
   clickables.length = 0
   // 每次重渲染都要从头数，否则多次 walk 会把同一张图累计好几次。
   globalThis.__mdImgs = []
+  cardChildClasses = []
   listOpenAttr = null
   drawerAttr = null
   path = ''
@@ -558,6 +567,13 @@ const checks = [
   ['uncertain note warns against resending', await (async () => {
     const note = await sendAndReadNote({ queued: true, uncertain: true })
     return note !== null && note.includes('未能确认') && note.includes('不要重复发送')
+  })()],
+  ['composer card holds only the textarea and the send dock', (() => {
+    // 输入框里不放任何提示：锁提示、回执都不该出现在这里。
+    return cardFound
+      && cardChildClasses.includes('cxm-textarea')
+      && cardChildClasses.includes('cxm-dock')
+      && cardChildClasses.length === 2
   })()],
   ['transcript does not animate its scroll on open', (() => {
     // 从注入到 head 的样式表里读，别重新解析一遍 client.js。

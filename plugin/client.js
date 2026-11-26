@@ -109,9 +109,6 @@ window.__ModuleLoader__.load({
         + '回到原会话就能看到进度。',
       'reply.handedOverUncertain': '这条消息可能已经在排队，但未能确认。'
         + '请到原会话确认，不要重复发送。',
-      'reply.lockedBusy': 'Codex 正在跑这个会话，这会儿插不进去，等这一轮结束再发。',
-      'reply.lockedIdle': 'Codex 桌面端开着这个会话，消息会直接交给它，由它在原会话里执行。',
-      'reply.lockedUnknown': '这个会话被另一个进程占着，暂时不能投递。关掉占用它的程序后这里会自动恢复。',
       'chat.imageAlt': '用户附的图 {n}',
       'reply.note': 'Enter 发送，Shift+Enter 换行。追加为新的一轮，不打断正在跑的任务。',
       'reply.options': 'Codex 给出的选项（点击填入，需你自己发送）：',
@@ -181,9 +178,6 @@ window.__ModuleLoader__.load({
         + ' It will pick it up and run it in the original session, at its own pace.',
       'reply.handedOverUncertain': 'This message may already be queued, but that could not be confirmed.'
         + ' Check the original session before sending again.',
-      'reply.lockedBusy': 'Codex is running this session right now, so nothing can be inserted. Send again once this turn ends.',
-      'reply.lockedIdle': 'The Codex desktop app has this session open. Messages are handed to it and run in the original session.',
-      'reply.lockedUnknown': 'Another process holds this session, so it cannot take a message right now. This clears once that program lets go.',
       'chat.imageAlt': 'Attached image {n}',
       'reply.note': 'Enter sends, Shift+Enter for a new line. Appends a new turn without interrupting running work.',
       'reply.options': 'Options Codex offered (click to fill in, you still send):',
@@ -527,20 +521,6 @@ window.__ModuleLoader__.load({
 /* 输入卡片照抄 DSH 的 .uV2eYG_card：28px 圆角、input-major 底色、soft elevation，
    内部纵向排「文本区 + 底部按钮行」。之前把按钮和 textarea 并排放在描边盒子里，
    和 DSH 的结构不一样。 */
-/* 锁定提示：一条安静的说明，不要做成报错的样子 —— 这不是错误。 */
-/* 锁住时的说明：消息可以排队，所以输入框留着，这行只是把情况讲清楚。
-   内边距和 .cxm-textarea 一致，说明文字和下面的输入起点对齐。 */
-.cxm-locked{display:flex;align-items:flex-start;gap:6px;box-sizing:border-box;
-  padding:2px 8px 0 14px;
-  font-family:inherit;font-size:13px;line-height:20px;
-  color:var(--dsw-alias-label-secondary)}
-/* 圆点要落在第一行文字的中间，不然会贴着顶边。 */
-.cxm-locked-dot{flex:none;width:6px;height:6px;border-radius:999px;margin-top:7px;
-  background:var(--dsw-alias-state-warn-primary)}
-/* 「只是开着」不是异常，是用户可以去关掉的一个动作，用信息色而不是警告色；
-   正在跑才是真的只能等。 */
-.cxm-locked[data-reason='idle'] .cxm-locked-dot{background:var(--dsw-alias-state-business-primary)}
-.cxm-locked[data-reason='idle']{color:var(--dsw-alias-label-primary)}
 .cxm-opt:disabled{opacity:.5;cursor:not-allowed}
 /* 用户附的图：和 DSH 的附件缩略图同尺寸（64×64，radius-xl），点开看大图。
    一张 2MB 的截图直接铺满气泡会把整段对话压垮，缩略图更接近桌面端的做法。 */
@@ -1334,12 +1314,7 @@ window.__ModuleLoader__.load({
     }
 
     /** The composer: appends a turn; never answers on the user's behalf. */
-    function Composer({ t, threadId, questions, onSent, onNote, locked = false, lockedBy = null }) {
-      // 锁住的原因不一样，用户该做的事也不一样：正在跑只能等，只是开着可以去关掉。
-      const lockedText =
-        lockedBy === 'busy' ? t('reply.lockedBusy')
-          : lockedBy === 'idle' ? t('reply.lockedIdle')
-            : t('reply.lockedUnknown')
+    function Composer({ t, threadId, questions, onSent, onNote }) {
       const [draft, setDraft] = useState('')
       const [busy, setBusy] = useState(false)
       const [picked, setPicked] = useState(null)
@@ -1386,7 +1361,7 @@ window.__ModuleLoader__.load({
 
       return h(
         'div',
-        { className: 'cxm-composer', 'data-locked': locked ? 'true' : 'false' },
+        { className: 'cxm-composer' },
         options.length > 0
           ? h(
               'div',
@@ -1401,7 +1376,6 @@ window.__ModuleLoader__.load({
                     className: 'cxm-opt',
                     'data-picked': picked === index ? 'true' : 'false',
                     'aria-pressed': picked === index,
-                    disabled: locked,
                     onClick: () => {
                       setDraft(option)
                       setPicked(index)
@@ -1415,16 +1389,6 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'cxm-card' },
-          // 锁着时不再挡住输入：消息会排队，锁一释放自动投出去。
-          // 但得先说清楚「现在发不出去」，否则用户会以为已经送到了。
-          locked
-            ? h(
-                'div',
-                { className: 'cxm-locked', role: 'status', 'data-reason': lockedBy || 'unknown' },
-                h('span', { className: 'cxm-locked-dot', 'aria-hidden': 'true' }),
-                lockedText,
-              )
-            : null,
           h('textarea', {
             className: 'cxm-textarea',
             rows: 1,   // 空时只占一行，和 DSH 的 min-height:36px 对应；不写会默认 2 行
@@ -1883,8 +1847,6 @@ window.__ModuleLoader__.load({
           questions,
           onSent,
           onNote: setNote,
-          locked: detail?.locked === true,
-          lockedBy: detail?.lockedBy ?? null,
         }),
         h(
           'div',
