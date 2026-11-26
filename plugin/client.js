@@ -466,6 +466,16 @@ window.__ModuleLoader__.load({
 .cxm-stamp{color:var(--dsw-alias-label-caption);font-size:11px;line-height:16px;
   font-variant-numeric:tabular-nums}
 
+/* 自己刚发出去的消息：先上屏，旁边挂一个状态。转圈 = 还没等到 Codex 的回应，
+   红色叹号 = 这条根本没发出去。和 DSH 的 pending echo 一样是普通用户气泡，
+   只是多一个角标，不额外加框、不加底色。 */
+.cxm-msg[data-echo='true'] .cxm-bubble{opacity:.72}
+.cxm-msg[data-echo='failed'] .cxm-bubble{opacity:.72}
+.cxm-echo-mark{display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;flex:none;color:var(--dsw-alias-label-caption)}
+.cxm-msg[data-echo='failed'] .cxm-echo-mark{color:var(--dsw-alias-state-error-primary)}
+.cxm-echo-row{display:flex;align-items:center;gap:6px;min-width:0}
+
 /* action: a quiet disclosure-style row, like a tool line in the native flow */
 /* 中间过程折叠块：平时只有一行「用时 X ›」，和 Codex 的显示一致。 */
 .cxm-work{display:flex;flex-direction:column;gap:6px;min-width:0}
@@ -604,6 +614,9 @@ window.__ModuleLoader__.load({
 @keyframes cxm-send-spin{to{transform:rotate(360deg)}}
 .cxm-send-spin{animation:.8s linear infinite cxm-send-spin}
 @media (prefers-reduced-motion:reduce){.cxm-send-spin{animation-duration:2.4s}}
+/* 已上屏但还没等到回应的那条消息旁边的转圈，和发送键共用一套动画。 */
+.cxm-echo-spin{animation:.8s linear infinite cxm-send-spin}
+@media (prefers-reduced-motion:reduce){.cxm-echo-spin{animation-duration:2.4s}}
 /* 吸在滚动区顶部：滚动时它留在原地，不会看起来像一条消息内容。 */
 .cxm-more{position:sticky;top:0;z-index:1;display:flex;justify-content:center;
   padding:6px 0 10px;flex:none;
@@ -917,6 +930,52 @@ window.__ModuleLoader__.load({
           'stroke-linecap': 'round',
           'stroke-linejoin': 'round',
         }),
+      )
+    }
+
+    /** 已上屏那条消息的角标：转圈 = 等回应，红色叹号 = 没发出去。 */
+    function EchoMark({ status }) {
+      if (status === 'failed') {
+        return h(
+          'span',
+          { className: 'cxm-echo-mark', role: 'img', 'aria-label': '发送失败' },
+          h(
+            'svg',
+            { viewBox: '0 0 16 16', width: 14, height: 14, 'aria-hidden': 'true', focusable: 'false' },
+            h('circle', {
+              cx: 8, cy: 8, r: 7, fill: 'none',
+              stroke: 'currentColor', strokeWidth: 1.4,
+            }),
+            h('path', {
+              d: 'M8 4.2v4.4', fill: 'none', stroke: 'currentColor',
+              strokeWidth: 1.4, strokeLinecap: 'round',
+            }),
+            h('circle', { cx: 8, cy: 11.4, r: 0.85, fill: 'currentColor' }),
+          ),
+        )
+      }
+      return h(
+        'span',
+        { className: 'cxm-echo-mark', role: 'img', 'aria-label': '发送中' },
+        h(
+          'svg',
+          {
+            className: 'cxm-echo-spin',
+            viewBox: '0 0 16 16',
+            width: 13,
+            height: 13,
+            'aria-hidden': 'true',
+            focusable: 'false',
+          },
+          h('circle', {
+            cx: 8, cy: 8, r: 6, fill: 'none',
+            stroke: 'currentColor', strokeOpacity: 0.3, strokeWidth: 1.8,
+          }),
+          h('path', {
+            d: 'M8 2a6 6 0 0 1 6 6', fill: 'none',
+            stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round',
+          }),
+        ),
       )
     }
 
@@ -1314,7 +1373,7 @@ window.__ModuleLoader__.load({
     }
 
     /** The composer: appends a turn; never answers on the user's behalf. */
-    function Composer({ t, threadId, questions, onSent, onNote }) {
+    function Composer({ t, threadId, questions, onSent, onNote, onEcho, onEchoFailed }) {
       const [draft, setDraft] = useState('')
       const [busy, setBusy] = useState(false)
       const [picked, setPicked] = useState(null)
@@ -1333,6 +1392,9 @@ window.__ModuleLoader__.load({
         if (!message || busy) return
         setBusy(true)
         onNote?.(null)
+        // 先把这条消息画到对话里，旁边挂个转圈。等回执回来再改状态：
+        // 成功就等它落地（落地后自动消失），失败就换成红色叹号。
+        const echoId = onEcho?.(message) ?? null
         try {
           const result = await call('POST', 'codex-monitor/send', { threadId, message })
           onNote?.({
@@ -1347,7 +1409,9 @@ window.__ModuleLoader__.load({
           setPicked(null)
           onSent?.()
         } catch (error) {
-          // Keep the draft: losing the typed message is worse than the failed send.
+          // 发失败了，把那条上屏的消息标成失败（叹号），同时保留草稿：
+          // 丢了你打的字比发送失败更糟。
+          if (echoId) onEchoFailed?.(echoId)
           onNote?.({
             ok: false,
             text: error.threadBusy
@@ -1581,12 +1645,15 @@ window.__ModuleLoader__.load({
         )
       }
       const mine = entry.role === 'user'
+      // 刚发出去还没落到历史里的那条：先按用户消息画出来，再挂一个角标。
+      const echo = entry.echo ? entry.echo : null
       const body = h(
         'div',
         {
           className: 'cxm-msg',
           'data-role': mine ? 'user' : 'agent',
           'data-final': entry.final ? 'true' : 'false',
+          'data-echo': echo ? (echo === 'failed' ? 'failed' : 'true') : undefined,
         },
         // 图放在气泡外面，和 DSH 一样单独成一行：气泡有内边距，塞进去会贴边。
         (entry.images ?? []).length > 0
@@ -1632,7 +1699,14 @@ window.__ModuleLoader__.load({
               ),
             )
           : null,
-        mine ? h('div', { className: 'cxm-stamp' }, clock(entry.at)) : null,
+        mine
+          ? h(
+              'div',
+              { className: 'cxm-echo-row' },
+              echo ? h(EchoMark, { status: echo }) : null,
+              h('div', { className: 'cxm-stamp' }, clock(entry.at)),
+            )
+          : null,
       )
       if (!zoom) return body
       return [
@@ -1669,10 +1743,32 @@ window.__ModuleLoader__.load({
       // 发送回执放在最底部的状态栏，不塞进输入框：输入框只放输入，
       // 结果和「正在跑」的提示统一在底部一行里说。
       const [note, setNote] = useState(null)
+      // 自己刚发出去、还没落进历史的那些消息。发完立刻上屏，否则要等到
+      // 下一轮刷新（最多 5 秒）才看得见，用户会以为没发出去。
+      const [pending, setPending] = useState([])
       const olderKey = useRef(null)
+      const echoSeq = useRef(0)
 
       const fresh = detail?.transcript ?? []
-      const entries = older.length ? [...older, ...fresh] : fresh
+      // pushEcho 是在回调里读历史的，闭包里那份可能已经过期，用 ref 拿最新的。
+      const freshRef = useRef(fresh)
+      freshRef.current = fresh
+      const base = older.length ? [...older, ...fresh] : fresh
+      // 历史里出现了同样的文字，就说明这条真的落地了，把临时的那条收掉。
+      // 只比文字不比时间：投递走的是排队，落地的时刻可能比发送晚很多。
+      // 同一个句子可能被发过好几次，所以按「第几次出现」对账：发出去的时候
+      // 历史里已经有几条同文的，只有多出来的那条才算这条落地。
+      const sameText = (entry, text) => entry.role === 'user' && (entry.text ?? '') === text
+      const landed = (item) => fresh.filter((e) => sameText(e, item.text)).length > item.seen
+      const echoes = pending
+        .filter((item) => !landed(item))
+        .map((item) => ({
+          role: 'user',
+          at: item.at,
+          text: item.text,
+          echo: item.status,
+        }))
+      const entries = echoes.length ? [...base, ...echoes] : base
       // 后台投递是异步的，失败时 HTTP 早就返回成功了。不在这里说一声，
       // 用户只会看到任务「没动静」，然后以为是自己没发出去。
       const delivery = detail?.lastDelivery ?? null
@@ -1687,6 +1783,8 @@ window.__ModuleLoader__.load({
         setBefore(null)
         setHasMore(false)
         setNote(null)
+        // 换会话时把上一条会话的临时消息清掉，否则会串到别的会话里。
+        setPending([])
         olderKey.current = null
         stick.current = true
       }, [session.id])
@@ -1700,6 +1798,49 @@ window.__ModuleLoader__.load({
           olderKey.current = session.id
         }
       }, [detail, session.id])
+
+      // 上屏那一刻就把视图带到底部：自己发的消息自己得看得见。
+      const pushEcho = useCallback((text) => {
+        echoSeq.current += 1
+        const id = `echo-${echoSeq.current}`
+        stick.current = true
+        const history = freshRef.current
+        setPending((list) => [
+          // 上一条同样的文字发失败了，这次重发就把它顶掉，别堆两条。
+          ...list.filter((item) => !(item.text === text && item.status === 'failed')),
+          {
+            id,
+            text,
+            status: 'sending',
+            at: Date.now() / 1000,
+            // 发出去那一刻历史里已有几条同文（含还在等的），用来认出哪条是自己。
+            seen:
+              history.filter((e) => e.role === 'user' && (e.text ?? '') === text).length +
+              list.filter((item) => item.text === text).length,
+          },
+        ])
+        return id
+      }, [])
+
+      const failEcho = useCallback((id) => {
+        setPending((list) =>
+          list.map((item) => (item.id === id ? { ...item, status: 'failed' } : item)),
+        )
+      }, [])
+
+      // 历史变长了就清掉已经落地的那几条临时消息。不清的话，等这条真的进了
+      // 历史，再发一次同样的文字就会被误判成「已经落地」，界面什么都不显示。
+      useEffect(() => {
+        setPending((list) => {
+          const keep = list.filter(
+            (item) =>
+              fresh.filter((e) => e.role === 'user' && (e.text ?? '') === item.text).length <=
+              item.seen,
+          )
+          return keep.length === list.length ? list : keep
+        })
+        // 只跟历史条数走：detail 每次轮询都是新对象，跟它会把 effect 跑成每帧一次。
+      }, [fresh.length, session.id])
 
       // Follow the tail only while the reader is already at the bottom, so a poll
       // cannot yank the view away from something they scrolled back to read.
@@ -1847,6 +1988,8 @@ window.__ModuleLoader__.load({
           questions,
           onSent,
           onNote: setNote,
+          onEcho: pushEcho,
+          onEchoFailed: failEcho,
         }),
         h(
           'div',

@@ -14,6 +14,7 @@ import time
 import fcntl
 import json
 import unittest
+import urllib.request
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -896,6 +897,39 @@ class TestImages(TempDbs):
     def test_plain_message_is_untouched(self):
         self.assertEqual(c.strip_attachment_preamble("普通消息"), "普通消息")
 
+
+class TestDispatchTag(TempDbs):
+    """派活时附加的 [cxm:xxx] 标记是给监控找回轮次用的，不能漏进正文。"""
+
+    def test_tag_is_stripped(self):
+        self.assertEqual(c.strip_dispatch_tag("批准执行修复\n\n[cxm:13de71423bbb]"), "批准执行修复")
+
+    def test_message_without_tag_is_untouched(self):
+        self.assertEqual(c.strip_dispatch_tag("普通消息"), "普通消息")
+
+    def test_tag_inside_the_text_is_kept(self):
+        """只有结尾那个标记是壳，正文里正常出现的方括号不能误删。"""
+        text = "看一下 [cxm:abc] 这个写法"
+        self.assertEqual(c.strip_dispatch_tag(text), text)
+
+    def test_transcript_hides_the_tag(self):
+        tid = "01a2cccc-0000-7000-8000-000000000001"
+        self.add_thread(tid, "派过活的会话")
+        self.add_item(tid, "userMessage",
+                      {"id": "u1", "content": [
+                          {"type": "text", "text": "批准执行修复\n\n[cxm:13de71423bbb]"}]},
+                      at_ms=1000)
+        self.add_item(tid, "agentMessage",
+                      {"id": "a1", "phase": "final_answer", "text": "好"}, at_ms=2000)
+        users = [e for e in c.transcript(tid, 20)["entries"] if e["role"] == "user"]
+        self.assertEqual(users[0]["text"], "批准执行修复")
+
+    def test_describe_item_hides_the_tag(self):
+        label, detail = c.describe_item({"type": "userMessage", "data": {"content": [
+            {"type": "text", "text": "跑一下测试\n\n[cxm:0ad93647b7d9]"}]}})
+        self.assertEqual(label, "你提出")
+        self.assertEqual(detail, "跑一下测试")
+
     def test_local_image_becomes_an_embedded_url(self):
         tid = "01a2bbbb-0000-7000-8000-000000000001"
         self.add_thread(tid, "带图的会话")
@@ -1332,28 +1366,60 @@ class TestThreads(TempDbs):
             with self.assertRaises(c.QueueUncertain):
                 c.codex_queue("01a2cccc-1111-7000-8000-000000000002", "hi")
 
-    def test_dispatch_tag_is_found_in_history(self):
-        """派活标记要能从原会话历史里找回来，否则「已收件」永远变不成「在跑」。"""
+    def test_dispatch_message_is_found_in_history(self):
+        """派活消息要能从原会话历史里找回来，否则「已收件」永远变不成「在跑」。"""
         tid = "01a2cccc-2222-7000-8000-000000000003"
         self.add_thread(tid, "派活追踪")
-        token = "abc123def456"
         self.add_item(tid, "userMessage", {
             "type": "userMessage", "id": "m1",
-            "content": [{"type": "text",
-                         "text": "干活\n\n" + c.DISPATCH_TAG.format(token=token)}],
+            "content": [{"type": "text", "text": "干活"}],
         }, 1000, turn_id="turn-42")
-        self.assertEqual(c.find_dispatch_turn(tid, token), "turn-42")
+        self.assertEqual(c.find_dispatch_turn(tid, "干活"), "turn-42")
 
-    def test_dispatch_tag_is_not_confused_with_another_token(self):
-        """标记要精确匹配。前缀相同就当命中会把两条派活混成一条。"""
+    def test_dispatch_message_must_match_exactly(self):
+        """正文要精确匹配。只比前缀会把「干活」和「干活再检查一遍」混成一条。"""
         tid = "01a2cccc-3333-7000-8000-000000000004"
         self.add_thread(tid, "派活追踪")
         self.add_item(tid, "userMessage", {
             "type": "userMessage", "id": "m1",
-            "content": [{"type": "text",
-                         "text": "干活\n\n" + c.DISPATCH_TAG.format(token="aaaa1111")}],
+            "content": [{"type": "text", "text": "干活再检查一遍"}],
         }, 1000, turn_id="turn-1")
-        self.assertIsNone(c.find_dispatch_turn(tid, "aaaa"))
+        self.assertIsNone(c.find_dispatch_turn(tid, "干活"))
+
+    def test_dispatch_lookup_ignores_messages_from_before_the_send(self):
+        """同一句话以前发过。回查必须只认这次发出去的那条，否则会认领旧轮次。"""
+        tid = "01a2cccc-3333-7000-8000-00000000000a"
+        self.add_thread(tid, "派活追踪")
+        self.add_item(tid, "userMessage", {
+            "type": "userMessage", "id": "old",
+            "content": [{"type": "text", "text": "跑测试"}],
+        }, 1000, turn_id="turn-old")
+        self.add_item(tid, "userMessage", {
+            "type": "userMessage", "id": "new",
+            "content": [{"type": "text", "text": "跑测试"}],
+        }, 5000, turn_id="turn-new")
+        # 这次是在 4000 发出去的：只能认 5000 那条。
+        self.assertEqual(c.find_dispatch_turn(tid, "跑测试", 4000), "turn-new")
+        # 更早的入队时刻也照样能认出最新的那条。
+        self.assertEqual(c.find_dispatch_turn(tid, "跑测试", 0), "turn-new")
+        # 历史里只有发送之前的那条时，不能认领——那是上一轮的旧消息。
+        self.assertIsNone(c.find_dispatch_turn(tid, "跑测试", 9000))
+
+    def test_dispatch_send_does_not_tag_the_message(self):
+        """派活不能往消息里塞标记。那个标记会跟着上屏，用户看到的是乱码。"""
+        tid = "01a2cccc-3333-7000-8000-00000000000b"
+        self.add_thread(tid, "派活追踪")
+        sent = []
+
+        def fake_queue(thread, message):
+            sent.append(message)
+            return "mid-1"
+
+        with mock.patch.object(c, "codex_queue", side_effect=fake_queue):
+            payload, status = c.dispatch_to_desktop(tid, "干活")
+        self.assertEqual(status, 202)
+        self.assertTrue(payload["queued"])
+        self.assertEqual(sent, ["干活"])
 
     def test_reconcile_upgrades_queued_to_running(self):
         """入队只是收件。历史里出现了这条才算真的在跑，状态要跟着变。"""
@@ -1364,11 +1430,11 @@ class TestThreads(TempDbs):
         c.update_dispatch(tid, token, status="queued", messageId="mid-1")
         self.assertEqual(c.dispatch_reconcile(tid), [])
         self.assertEqual(c.list_dispatches(tid)[-1]["status"], "queued")
+        # 历史里的时间戳要晚于入队时刻，否则会被当成「发之前就有的一条」。
         self.add_item(tid, "userMessage", {
             "type": "userMessage", "id": "m1",
-            "content": [{"type": "text",
-                         "text": "干活\n\n" + c.DISPATCH_TAG.format(token=token)}],
-        }, 2000, turn_id="turn-9")
+            "content": [{"type": "text", "text": "干活"}],
+        }, int(time.time() * 1000) + 1000, turn_id="turn-9")
         self.assertEqual(c.dispatch_reconcile(tid), [token])
         row = c.list_dispatches(tid)[-1]
         self.assertEqual(row["status"], "running")
@@ -1383,9 +1449,8 @@ class TestThreads(TempDbs):
         c.update_dispatch(tid, token, status="queued")
         self.add_item(tid, "userMessage", {
             "type": "userMessage", "id": "m1",
-            "content": [{"type": "text",
-                         "text": "干活\n\n" + c.DISPATCH_TAG.format(token=token)}],
-        }, 1000, turn_id="turn-7")
+            "content": [{"type": "text", "text": "干活"}],
+        }, int(time.time() * 1000) + 1000, turn_id="turn-7")
         # 轮次还没跑完：不能报结果。
         self.add_turn(tid, "inProgress", turn_id="turn-7", completed_at=None)
         c.dispatch_reconcile(tid)

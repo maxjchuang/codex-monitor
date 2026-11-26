@@ -300,11 +300,22 @@ ATTACH_PREAMBLE = re.compile(
 )
 
 
+# 派活时在消息尾部附加的标记，用来在历史里找回这条消息所在的轮次。
+DISPATCH_TAG_RE = re.compile(r"\n*\[cxm:[0-9a-zA-Z]+\]\s*$")
+
+
 def strip_attachment_preamble(text):
     """把附件清单那段壳去掉，只留用户真正说的话。"""
     if "Files mentioned by the user" not in text:
         return text
     return ATTACH_PREAMBLE.sub("", text, count=1).strip()
+
+
+def strip_dispatch_tag(text):
+    """去掉派活时附加的 [cxm:xxx] 标记，那是给监控用的，不是人话。"""
+    if "[cxm:" not in text:
+        return text
+    return DISPATCH_TAG_RE.sub("", text).strip()
 
 
 def rollout_path_for(thread_id):
@@ -653,7 +664,7 @@ def transcript(thread_id, limit=200, scan_limit=4000, before=None):
             text = " ".join(
                 c.get("text", "") for c in content if c.get("type") == "text"
             ).strip()
-            text = strip_attachment_preamble(text)
+            text = strip_dispatch_tag(strip_attachment_preamble(text))
             entry = {"role": "user", "at": at, "text": text, "id": payload.get("id")}
             if images:
                 entry["images"] = images
@@ -1032,7 +1043,7 @@ def describe_item(item):
     t, d = item["type"], item["data"]
     if t == "userMessage":
         parts = [c.get("text", "") for c in d.get("content") or [] if c.get("type") == "text"]
-        return "你提出", " ".join(parts)
+        return "你提出", strip_dispatch_tag(" ".join(parts))
     if t == "agentMessage":
         phase = d.get("phase")
         label = {"commentary": "Codex 说", "final_answer": "Codex 结论"}.get(phase, "Codex 说")
@@ -1642,6 +1653,9 @@ STATE_DIR = os.path.join(os.path.expanduser("~"), ".codex-monitor")
 # 所以只能事后回到原会话历史里找这个标记，才能把「已收件」变成「真的在跑」。
 DISPATCH_DIR = os.path.join(STATE_DIR, "dispatches")
 DISPATCH_LOCK = threading.Lock()
+# 老版本会在消息尾部加这个标记，用来在历史里认领轮次。它跟着消息一起上屏，
+# 用户在 Codex 里看到的是一串乱码，所以已经不再写入；这里只保留读取兼容，
+# 让历史里残留的旧消息仍然能正常显示。
 DISPATCH_TAG = "[cxm:{token}]"
 DISPATCH_POLL_SEC = 5
 
@@ -1725,6 +1739,37 @@ def dispatch_threads():
     return [n[:-5] for n in names if n.endswith(".json")]
 
 
+def dispatch_to_desktop(thread_id, message):
+    """把消息交给持有会话的 Codex 桌面端。返回 (响应体, HTTP 状态码)。
+
+    消息原样发出去，不附加任何标记：加过的标记会跟着消息一起出现在用户
+    自己的 Codex 里，看起来像乱码。回查靠 dispatch_reconcile 按正文比对。
+    """
+    # 先落盘再入队：万一命令生效了却没看到回执，这条记录是唯一能证明
+    # 「可能已经派出去」的东西。
+    token = uuid.uuid4().hex[:12]
+    _append_dispatch(thread_id, token, message)
+    try:
+        message_id = codex_queue(thread_id, message)
+    except QueueUncertain as exc:
+        # 可能已经排进去了。不重发，如实说结果未知。
+        update_dispatch(thread_id, token, status="uncertain", result=str(exc)[:200])
+        return {
+            "ok": True, "queued": True, "uncertain": True,
+            "dispatchToken": token,
+            "error": f"{exc}。这条可能已经交给桌面端了，请到原会话确认，不要重复发送。",
+        }, 202
+    except Exception as exc:
+        update_dispatch(thread_id, token, status="failed", result=str(exc)[:200])
+        return {"ok": False, "error": str(exc)}, 500
+    update_dispatch(thread_id, token, status="queued", messageId=message_id)
+    return {
+        "ok": True, "queued": True, "native": True,
+        "messageId": message_id, "dispatchToken": token,
+        "error": "会话开着（由 Codex 桌面端持有），消息已交给它，由它接收并执行。",
+    }, 202
+
+
 def dispatch_reconcile(thread_id):
     """把「已收件」核对成「真的在跑」。
 
@@ -1735,7 +1780,7 @@ def dispatch_reconcile(thread_id):
     for item in list_dispatches(thread_id):
         if item.get("status") not in ("queued", "uncertain", "pending"):
             continue
-        turn_id = find_dispatch_turn(thread_id, item.get("token"))
+        turn_id = find_dispatch_turn(thread_id, item.get("message"), item.get("at") or 0)
         if not turn_id:
             continue
         update_dispatch(thread_id, item["token"], status="running", turnId=turn_id)
@@ -1777,28 +1822,50 @@ def turn_outcome(thread_id, turn_id):
     return (row["status"] or "unknown", True)
 
 
-def find_dispatch_turn(thread_id, token):
-    """回到原会话历史里找带这个标记的用户消息，拿到它所在的 turn。
+def find_dispatch_turn(thread_id, message, since_ms=0):
+    """回到原会话历史里找这条派活消息，拿到它所在的 turn。
 
     入队成功只说明桌面端收件了，执行是它自己的节奏。只有历史里真的出现了
     这条消息，才算派活落到实处。
+
+    以前是在消息尾部加一个 [cxm:xxx] 标记再按标记回查，但那个标记会跟着
+    消息一起上屏，用户在自己的 Codex 里看到的是一串乱码。所以改成按正文
+    比对：同一段话可能被发过很多次，取「不早于入队时刻」的最后一条。
     """
-    tag = DISPATCH_TAG.format(token=token)
+    wanted = (message or "").strip()
+    if not wanted:
+        return None
     conn = db(HIST_DB)
     if not conn:
         return None
     try:
-        row = conn.execute(
-            "select turn_id from thread_items "
-            "where thread_id=? and item_type='userMessage' and item_json like ? "
-            "order by rollout_ordinal desc limit 1",
-            (thread_id, f"%{tag}%"),
-        ).fetchone()
+        rows = conn.execute(
+            "select turn_id, item_json, created_at_ms from thread_items "
+            "where thread_id=? and item_type='userMessage' "
+            "order by rollout_ordinal desc limit 200",
+            (thread_id,),
+        ).fetchall()
     except sqlite3.Error:
         return None
     finally:
         conn.close()
-    return row["turn_id"] if row else None
+    for row in rows:
+        try:
+            payload = json.loads(row["item_json"])
+        except (TypeError, ValueError):
+            continue
+        text = " ".join(
+            c.get("text", "") for c in payload.get("content") or []
+            if c.get("type") == "text"
+        ).strip()
+        if strip_dispatch_tag(strip_attachment_preamble(text)) != wanted:
+            continue
+        # 入队之前的历史里也可能有同样的句子，那种是旧的一轮，不能认。
+        created = row["created_at_ms"] or 0
+        if since_ms and created and created < since_ms:
+            continue
+        return row["turn_id"]
+    return None
 
 DELIVERY_DIR = os.path.join(STATE_DIR, "deliveries")
 DELIVERY_LOCK = threading.Lock()
@@ -2167,37 +2234,8 @@ def serve(port=0, host="127.0.0.1"):
                         # 能收活，交给它自己的队列就行，执行仍发生在原会话。
                         owner = lock_owner(tid)
                         if owner and owner.get("desktop"):
-                            # 先落盘再入队：万一命令生效了却没看到回执，
-                            # 这条记录是唯一能证明「可能已经派出去」的东西。
-                            token = uuid.uuid4().hex[:12]
-                            tagged = f"{msg}\n\n{DISPATCH_TAG.format(token=token)}"
-                            _append_dispatch(tid, token, msg)
-                            try:
-                                message_id = codex_queue(tid, tagged)
-                            except QueueUncertain as exc:
-                                # 可能已经排进去了。不重发，如实说结果未知。
-                                update_dispatch(tid, token, status="uncertain",
-                                                result=str(exc)[:200])
-                                self._json({
-                                    "ok": True, "queued": True, "uncertain": True,
-                                    "dispatchToken": token,
-                                    "error": f"{exc}。这条可能已经交给桌面端了，"
-                                             f"请到原会话确认，不要重复发送。",
-                                }, 202)
-                                return
-                            except Exception as exc:
-                                update_dispatch(tid, token, status="failed",
-                                                result=str(exc)[:200])
-                                self._json({"ok": False, "error": str(exc)}, 500)
-                                return
-                            update_dispatch(tid, token, status="queued",
-                                            messageId=message_id)
-                            self._json({
-                                "ok": True, "queued": True, "native": True,
-                                "messageId": message_id, "dispatchToken": token,
-                                "error": "会话开着（由 Codex 桌面端持有），消息已交给它，"
-                                         "由它接收并执行。",
-                            }, 202)
+                            payload, status = dispatch_to_desktop(tid, msg)
+                            self._json(payload, status)
                             return
                         raise RuntimeError(WRITER_BUSY)
                     deliver_async(tid, msg)

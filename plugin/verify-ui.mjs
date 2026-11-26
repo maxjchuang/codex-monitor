@@ -181,20 +181,43 @@ let deliveryOverride = null
 const calls = []
 // 派活回执要能按用例切换：交给桌面端 / 结果未知 / 排进本地队列。
 let sendReply = null
+// 发送失败时返回 500，用来验「上屏那条换成红色叹号」。
+let sendFail = null
+
+// 从请求体里取出 threadId。真实接口把参数放在 POST 的 JSON body 里。
+function requestedThreadId(options) {
+  try {
+    const body = options?.body
+    if (typeof body !== 'string') return null
+    const parsed = JSON.parse(body)
+    return parsed?.payload?.threadId ?? parsed?.threadId ?? null
+  } catch {
+    return null
+  }
+}
 
 globalThis.fetch = async (url, options) => {
   calls.push(String(url))
+  if (sendFail && String(url).includes('codex-monitor/send')) {
+    return { ok: false, status: 500, json: async () => ({ ok: false, error: sendFail }) }
+  }
   if (sendReply && String(url).includes('codex-monitor/send')) {
     const body = sendReply
     return { ok: true, status: 200, json: async () => ({ ok: true, ...body }) }
   }
-  const base = String(url).includes('status') ? statusPayload : statePayload
-  const body = String(url).includes('status') && deliveryOverride
-    ? { ...base, data: { ...base.data, lastDelivery: deliveryOverride } }
-    : base
+  const isStatus = String(url).includes('status')
+  const base = isStatus ? statusPayload : statePayload
+  const data = { ...base.data }
+  if (isStatus) {
+    // 真实服务端返回的详情 id 就是请求里的 threadId。桩必须照做，否则
+    // 「detail.id 和选中会话一致才渲染」这条判断永远为假，对话区一直是空态。
+    const asked = requestedThreadId(options)
+    if (asked) data.id = asked
+    if (deliveryOverride) data.lastDelivery = deliveryOverride
+  }
   // 返回浅拷贝：详情对象会被 useState 存住，若和 fixture 共用引用，
   // 后面还原 fixture 会把已经交给界面的那份数据也一起改回去。
-  return { ok: true, status: 200, json: async () => ({ ...body, data: { ...body.data } }) }
+  return { ok: true, status: 200, json: async () => ({ ...base, data }) }
 }
 
 const dict = {
@@ -317,6 +340,9 @@ let noteTone = null
 let selectedRowTitle = null
 let shotCount = 0
 let shotInsideBubble = 0
+// 自己刚发出去、还没等到回应的那条消息：记下它的文字和角标状态。
+let echoMsgs = []
+let echoMarks = []
 let parentClass = null
 const allButtons = []   // 跨渲染累积，方便找只出现在某次渲染里的按钮
 function walk(node, at) {
@@ -399,6 +425,24 @@ function walk(node, at) {
     }
     selectedRowTitle = grab(node.children)
   }
+  // 上屏的临时消息：data-echo 标在 .cxm-msg 上，转圈/叹号是里面的 .cxm-echo-mark。
+  if (typeof cls === 'string' && cls.split(/\s+/).includes('cxm-msg')
+      && node.props?.['data-echo'] !== undefined) {
+    const grab = (kids) => {
+      for (const kid of kids || []) {
+        if (typeof kid === 'string' && kid.trim()) return kid.trim()
+        if (kid && kid.children) {
+          const hit = grab(kid.children)
+          if (hit) return hit
+        }
+      }
+      return null
+    }
+    echoMsgs.push({ state: node.props['data-echo'], text: grab(node.children) })
+  }
+  if (typeof cls === 'string' && cls.split(/\s+/).includes('cxm-echo-mark')) {
+    echoMarks.push(node.props['aria-label'] ?? '')
+  }
   if (cls === 'cxm-dock') dockParent = node
   if (cls === 'cxm-card') {
     cardFound = true
@@ -429,6 +473,8 @@ function renderOnce() {
   // 每次重渲染都要从头数，否则多次 walk 会把同一张图累计好几次。
   globalThis.__mdImgs = []
   cardChildClasses = []
+  echoMsgs = []
+  echoMarks = []
   listOpenAttr = null
   drawerAttr = null
   path = ''
@@ -574,6 +620,47 @@ const checks = [
       && cardChildClasses.includes('cxm-textarea')
       && cardChildClasses.includes('cxm-dock')
       && cardChildClasses.length === 2
+  })()],
+  // 发出去就得立刻上屏，旁边挂转圈；失败了换成红色叹号。没有这个，用户
+  // 得等到下一轮轮询（最多 5 秒）才看得见，会以为没发出去。
+  ['sent message shows up in the transcript right away', await (async () => {
+    const got = await sendAndReadEcho({ text: '把空行修掉' })
+    return Boolean(got) && got.msgs.some((m) => m.state === 'true' && m.text === '把空行修掉')
+  })()],
+  ['the echoed message carries a spinner while it waits', await (async () => {
+    const got = await sendAndReadEcho({ text: '把空行修掉' })
+    return Boolean(got) && got.marks.includes('发送中')
+  })()],
+  ['a failed send turns the spinner into a red exclamation', await (async () => {
+    const got = await sendAndReadEcho({ text: '把空行修掉', fail: 'thread not found' })
+    return Boolean(got)
+      && got.msgs.some((m) => m.state === 'failed' && m.text === '把空行修掉')
+      && got.marks.includes('发送失败')
+      && !got.marks.includes('发送中')
+  })()],
+  ['the echo mark is red only when the send failed', (() => {
+    const style = headChildren.find((el) => el['data-plugin-css'] === 'codex-monitor')
+    const css = style ? String(style.textContent) : ''
+    // 转圈用弱色，叹号用错误色。两个状态靠颜色分开，不能都红也不能都灰。
+    const failed = /\.cxm-msg\[data-echo='failed'\] \.cxm-echo-mark\{[^}]*state-error-primary/.test(css)
+    const neutral = /\.cxm-echo-mark\{[^}]*label-caption/.test(css)
+    return failed && neutral
+  })()],
+  ['the echoed message is not a real transcript entry', await (async () => {
+    // 落地后临时那条必须消失，否则历史里会出现两条一样的。
+    const got = await sendAndReadEcho({ text: '把空行修掉' })
+    if (!got || !got.msgs.length) return false
+    // 把这条塞进历史，再刷新一次详情，临时那条应该被收掉。
+    statusPayload.data.transcript.push({ role: 'user', at: 1795431100, text: '把空行修掉' })
+    try {
+      const refresh = clickables.find((b) => b.label === '刷新' || b.label === 'Refresh')
+      refresh?.onClick?.()
+      await settle()
+      await settle()
+      return echoMsgs.length === 0
+    } finally {
+      statusPayload.data.transcript.pop()
+    }
   })()],
   ['transcript does not animate its scroll on open', (() => {
     // 从注入到 head 的样式表里读，别重新解析一遍 client.js。
@@ -777,6 +864,32 @@ async function sendAndReadNote(reply) {
     return noteText
   } finally {
     sendReply = null
+  }
+}
+
+// 走一次发送，然后看对话里那条「上屏了但还没回应」的消息长什么样。
+// 这是本次要保的行为：发出去就得看见，不能等下一轮刷新才出现。
+async function sendAndReadEcho(opts = {}) {
+  // 每条检查都从干净的挂载开始：上一条检查留下的「还没落地」的回显会累加到
+  // 这一条里，让「失败时不该有转圈」这类断言读到别人的转圈。
+  hookSlots.clear()
+  renderOnce()
+  await settle()
+  await settle()
+  if (!textareaOnChange) return null
+  sendReply = opts.fail ? null : (opts.reply ?? { native: true, queued: true, messageId: 'm1' })
+  sendFail = opts.fail ?? null
+  try {
+    textareaOnChange({ target: { value: opts.text ?? '干活' } })
+    await settle()
+    press({})
+    await settle()
+    await settle()
+    await settle()
+    return { msgs: echoMsgs.slice(), marks: echoMarks.slice(), note: noteText }
+  } finally {
+    sendReply = null
+    sendFail = null
   }
 }
 
